@@ -206,14 +206,21 @@ export function AccessLog({ title, records, emptyMessage = "Nenhum registro enco
                         )}
                       </div>
                       
-                      <div className="flex items-center gap-2 mt-0.5">
-                         <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                           {getTypeLabel(record.type)}
-                         </span>
-                         <span className="w-1 h-1 rounded-full bg-slate-300" />
-                         <span className="text-[10px] font-black text-slate-900">
-                           {record.destination}
-                         </span>
+                      <div className="flex flex-col gap-0.5 mt-0.5 leading-tight text-left">
+                        <div className="flex items-center gap-2">
+                           <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                             {getTypeLabel(record.type)}
+                           </span>
+                           <span className="w-1 h-1 rounded-full bg-slate-300" />
+                           <span className="text-[10px] font-black text-slate-900">
+                             UNIDADE {record.destination}
+                           </span>
+                        </div>
+                        {record.morador_solicitante_nome && (
+                          <div className="text-[9.5px] font-bold text-slate-500 uppercase tracking-wide">
+                            Solicitado por: <span className="text-blue-600 font-black">{record.morador_solicitante_nome}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -458,6 +465,16 @@ export function AccessLog({ title, records, emptyMessage = "Nenhum registro enco
                       UNIDADE {selectedRecord.destination}
                     </span>
                   </div>
+
+                  {/* Morador Solicitante */}
+                  {selectedRecord.morador_solicitante_nome && (
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">Morador Solicitante</span>
+                      <span className="text-sm font-extrabold text-blue-800 bg-blue-50/50 px-3 py-2 rounded-xl border border-blue-100/30 block truncate">
+                        {selectedRecord.morador_solicitante_nome}
+                      </span>
+                    </div>
+                  )}
 
                   {/* Documento (CPF / RG) */}
                   <div className="space-y-1">

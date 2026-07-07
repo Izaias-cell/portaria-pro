@@ -8,6 +8,7 @@ import { cn } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { format } from 'date-fns';
 import { getCorrectedType, verifyContentForCrossModality } from '../lib/classificationUtils';
+import { supabase } from '../lib/supabase';
 
 const COLOR_OPTIONS = [
   { id: 'branco', name: 'Branco', emoji: '⚪', colorClass: 'bg-white border-slate-300 text-slate-800' },
@@ -403,6 +404,8 @@ export function AccessForm({
     prismaId: (initialData as any)?.prismaId || undefined,
     prismaNumber: (initialData as any)?.prismaNumber || undefined,
     prismaColor: (initialData as any)?.prismaColor || undefined,
+    morador_solicitante_id: (initialData as any)?.morador_solicitante_id || undefined,
+    morador_solicitante_nome: (initialData as any)?.morador_solicitante_nome || undefined,
   });
 
   const blockedProfile = useMemo(() => {
@@ -460,6 +463,305 @@ export function AccessForm({
     const destVal = initialData?.destination || destSearch || '';
     return !!(destVal && destVal.trim().length > 0);
   }, [initialData]);
+
+  // Requesting resident matching states and hook
+  const [activeResidentsForUnit, setActiveResidentsForUnit] = useState<any[]>([]);
+  const [selectedResidentIndex, setSelectedResidentIndex] = useState<number>(0);
+  const [residentSelectionConfirmed, setResidentSelectionConfirmed] = useState<boolean>(false);
+  const [isManualResident, setIsManualResident] = useState<boolean>(false);
+  const [isLoadingResidents, setIsLoadingResidents] = useState<boolean>(false);
+
+  const selecionarMorador = (res: any, shouldFocus = true) => {
+    console.log('[Diagnostic] selecionarMorador chamado:', res, 'shouldFocus:', shouldFocus);
+    if (!res) return;
+    setFormData(prev => ({
+      ...prev,
+      morador_solicitante_id: res.id,
+      morador_solicitante_nome: res.residentName
+    }));
+    setResidentSelectionConfirmed(true);
+    setIsManualResident(false);
+    
+    if (shouldFocus) {
+      setTimeout(() => {
+        inputRefs.current.name?.focus();
+      }, 50);
+    }
+  };
+
+  useEffect(() => {
+    const cleanVal = destSearch.trim().toUpperCase();
+    if (!cleanVal) {
+      setActiveResidentsForUnit([]);
+      setSelectedResidentIndex(0);
+      setResidentSelectionConfirmed(false);
+      setIsManualResident(false);
+      setFormData(prev => ({
+        ...prev,
+        morador_solicitante_id: undefined,
+        morador_solicitante_nome: undefined
+      }));
+      return;
+    }
+
+    // Normalizing the input (removing "CASA", "APTO", "APARTAMENTO", "AP", spaces, etc.)
+    const normalizedInput = cleanVal.replace(/^(CASA|APTO|APARTAMENTO|AP)\s*/, '').trim();
+
+    let isCurrent = true;
+    setIsLoadingResidents(true);
+
+    async function fetchResidents() {
+      console.log(`[Diagnostic] Casa digitada: "${destSearch}" (Normalizada: "${normalizedInput}")`);
+      let residents: any[] = [];
+      let executedQuery = '';
+      let queryError: any = null;
+      let unitFoundDetails: any = null;
+
+      try {
+        // Method 1: Try units/residents stable relationship if tables exist
+        console.log('[Diagnostic] Executando consulta: unidades/moradores...');
+        executedQuery = 'unidades -> moradores';
+        const { data: units, error: unitErr } = await supabase
+          .from('unidades')
+          .select('*')
+          .or(`numero.eq.${normalizedInput},numero.ilike.%${normalizedInput}%`);
+
+        if (unitErr) {
+          throw unitErr;
+        }
+
+        if (units && units.length > 0) {
+          unitFoundDetails = units;
+          console.log('[Diagnostic] Unidades encontradas:', units);
+          const unitIds = units.map(u => u.id);
+          
+          const { data: morad, error: moradErr } = await supabase
+            .from('moradores')
+            .select('*')
+            .in('unidade_id', unitIds);
+
+          if (moradErr) {
+            throw moradErr;
+          }
+
+          if (morad) {
+            // Filter only active residents
+            const activeMorad = morad.filter(m => m.ativo !== false && m.active !== false);
+            residents = activeMorad.map(m => ({
+              id: m.id,
+              unit: units.find(u => u.id === m.unidade_id)?.numero || normalizedInput,
+              residentName: m.nome || m.name || 'Morador',
+              primaryPhone: m.telefone || m.phone || '',
+              active: true
+            }));
+          }
+        } else {
+          console.log('[Diagnostic] Nenhuma unidade encontrada em "unidades"');
+        }
+      } catch (err: any) {
+        queryError = err;
+        console.log('[Diagnostic] Erro ou tabelas "unidades"/"moradores" não disponíveis:', err.message || err);
+      }
+
+      // Method 2: Fallback to perfis table (single table)
+      if (residents.length === 0) {
+        try {
+          console.log('[Diagnostic] Executando consulta de fallback: perfis...');
+          executedQuery = 'perfis';
+          const { data: profiles, error: profErr } = await supabase
+            .from('perfis')
+            .select('*')
+            .eq('funcao', 'morador');
+
+          if (profErr) {
+            throw profErr;
+          }
+
+          if (profiles) {
+            console.log('[Diagnostic] Perfis brutos retornados:', profiles);
+            
+            // Normalize and match condominio_id (the unit)
+            const matchedProfiles = profiles.filter(p => {
+              if (p.active === false || p.ativo === false) return false;
+              const unitStr = String(p.condominio_id || '').toUpperCase().trim();
+              const unitNorm = unitStr.replace(/^(CASA|APTO|APARTAMENTO|AP)\s*/, '').trim();
+              return unitNorm === normalizedInput || unitStr === cleanVal || unitNorm === cleanVal || unitStr === normalizedInput;
+            });
+
+            residents = matchedProfiles.map(p => ({
+              id: p.id,
+              unit: p.condominio_id || normalizedInput,
+              residentName: p.nome || p.name || 'Morador',
+              primaryPhone: p.telefone || p.phone || '',
+              active: true
+            }));
+          }
+        } catch (err: any) {
+          queryError = err;
+          console.error('[Diagnostic] Erro ao consultar perfis:', err.message || err);
+        }
+      }
+
+      if (!isCurrent) return;
+
+      console.log('[Diagnostic] Consulta Executada:', executedQuery);
+      console.log('[Diagnostic] Unidade Encontrada:', unitFoundDetails || (residents.length > 0 ? residents[0].unit : 'Nenhuma'));
+      console.log('[Diagnostic] Moradores Retornados:', residents);
+      if (queryError) {
+        console.log('[Diagnostic] Erro retornado pelo Supabase:', queryError);
+      }
+
+      setIsLoadingResidents(false);
+
+      if (residents.length === 1) {
+        setActiveResidentsForUnit(residents);
+        setSelectedResidentIndex(0);
+        selecionarMorador(residents[0], false);
+      } else if (residents.length > 1) {
+        setActiveResidentsForUnit(residents);
+        setSelectedResidentIndex(0);
+        setResidentSelectionConfirmed(false);
+        setIsManualResident(false);
+      } else {
+        setActiveResidentsForUnit([]);
+        setSelectedResidentIndex(0);
+        setResidentSelectionConfirmed(true);
+        setIsManualResident(false);
+        setFormData(prev => ({
+          ...prev,
+          morador_solicitante_id: undefined,
+          morador_solicitante_nome: 'Morador'
+        }));
+      }
+    }
+
+    const handler = setTimeout(() => {
+      fetchResidents();
+    }, 250);
+
+    return () => {
+      isCurrent = false;
+      clearTimeout(handler);
+    };
+  }, [destSearch]);
+
+  const renderMoradorSolicitanteSection = () => {
+    if (!destSearch.trim()) return null;
+
+    if (isLoadingResidents) {
+      return (
+        <div className="mt-2 p-2.5 bg-slate-50 rounded-xl border border-slate-200 shadow-sm text-left animate-pulse">
+          <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+            Buscando moradores no Supabase em tempo real...
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="mt-2 p-2.5 bg-slate-50 rounded-xl border border-slate-200 shadow-sm text-left">
+        {activeResidentsForUnit.length > 1 && !residentSelectionConfirmed && !isManualResident && (
+          <div>
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 flex justify-between items-center">
+              <span>Selecione o Morador Solicitante:</span>
+              <span className="text-blue-600 animate-pulse text-[9px]">Use ↑↓ e Enter</span>
+            </div>
+            <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
+              {activeResidentsForUnit.map((res, idx) => (
+                <button
+                  key={res.id}
+                  type="button"
+                  className={cn(
+                    "w-full px-3 py-2 text-left rounded-lg text-xs font-bold transition flex justify-between items-center",
+                    idx === selectedResidentIndex
+                      ? "bg-blue-600 text-white shadow-md font-black scale-101"
+                      : "bg-white hover:bg-slate-100 text-slate-800 border border-slate-100"
+                  )}
+                  onClick={() => selecionarMorador(res)}
+                >
+                  <span>{res.residentName}</span>
+                  {idx === selectedResidentIndex && <span className="text-[10px]">⏎</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeResidentsForUnit.length === 0 && !residentSelectionConfirmed && !isManualResident && (
+          <div className="text-center py-2">
+            <p className="text-[10px] font-black text-red-500 uppercase tracking-widest mb-2">
+              Nenhum morador encontrado para esta unidade.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setIsManualResident(true);
+                setFormData(prev => ({ ...prev, morador_solicitante_nome: '' }));
+              }}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-lg text-[10px] uppercase tracking-widest transition shadow-sm"
+            >
+              F2: Informar Manualmente
+            </button>
+          </div>
+        )}
+
+        {isManualResident && !residentSelectionConfirmed && (
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+              Nome do Morador Solicitante (Manual):
+            </label>
+            <div className="flex gap-2">
+              <input
+                autoFocus
+                type="text"
+                placeholder="NOME DO MORADOR"
+                className="flex-1 h-[34px] px-3 bg-white border border-slate-300 rounded-lg text-xs font-bold uppercase focus:border-blue-500 outline-none"
+                value={formData.morador_solicitante_nome || ''}
+                onChange={(e) => setFormData(prev => ({ ...prev, morador_solicitante_nome: e.target.value.toUpperCase() }))}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    setResidentSelectionConfirmed(true);
+                    advanceFromField('destination');
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setResidentSelectionConfirmed(true);
+                  advanceFromField('destination');
+                }}
+                className="h-[34px] px-3 bg-blue-600 text-white font-black rounded-lg text-[10px] uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition"
+              >
+                Confirmar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {residentSelectionConfirmed && (
+          <div className="flex justify-between items-center bg-emerald-50 border border-emerald-100 px-3 py-1.5 rounded-lg">
+            <span className="text-xs font-black text-emerald-800 tracking-tight">
+              Solicitado por: <span className="underline font-extrabold">{formData.morador_solicitante_nome || 'Morador'}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setResidentSelectionConfirmed(false);
+                setIsManualResident(true);
+                setFormData(prev => ({ ...prev, morador_solicitante_nome: prev.morador_solicitante_nome || '' }));
+              }}
+              className="text-[9px] font-black text-blue-600 hover:text-blue-800 uppercase tracking-widest underline cursor-pointer"
+            >
+              Alterar
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // Smart Memory State
   const [smartSuggestions, setSmartSuggestions] = useState<SmartSuggestion[]>([]);
@@ -740,6 +1042,54 @@ export function AccessForm({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent, field: string) => {
+    // Intercept keyboard events for requesting resident selection on destination
+    if (field === 'destination') {
+      if (e.key === 'F2') {
+        e.preventDefault();
+        if (activeResidentsForUnit.length > 0 || isLoadingResidents) {
+          console.log('[Diagnostic] F2 ignorado: Só é permitido informar manualmente se nenhum morador for encontrado.');
+          return;
+        }
+        setIsManualResident(true);
+        setResidentSelectionConfirmed(false);
+        setFormData(prev => ({
+          ...prev,
+          morador_solicitante_nome: ''
+        }));
+        return;
+      }
+
+      if (isManualResident && !residentSelectionConfirmed) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          setResidentSelectionConfirmed(true);
+          advanceFromField('destination');
+        }
+        return;
+      }
+
+      if (activeResidentsForUnit.length > 1 && !residentSelectionConfirmed) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setSelectedResidentIndex(prev => (prev + 1) % activeResidentsForUnit.length);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setSelectedResidentIndex(prev => (prev - 1 + activeResidentsForUnit.length) % activeResidentsForUnit.length);
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const selRes = activeResidentsForUnit[selectedResidentIndex];
+          if (selRes) {
+            selecionarMorador(selRes);
+          }
+          return;
+        }
+      }
+    }
+
     // Intercept keyboard events if smart suggestions are open and have items
     if (activeSuggestionField && smartSuggestions.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -1278,11 +1628,18 @@ export function AccessForm({
 
   const filteredResidents = useMemo(() => {
     if (!destSearch) return [];
-    return MOCK_RESIDENTS.filter(r => 
-      r.unit.toLowerCase().includes(destSearch.toLowerCase()) ||
-      r.name.toLowerCase().includes(destSearch.toLowerCase())
+    
+    const list = (unitPhones && unitPhones.length > 0)
+      ? unitPhones.map(u => ({ unit: u.unit, name: u.residentName, id: u.id, active: u.active }))
+      : MOCK_RESIDENTS;
+
+    return list.filter(r => 
+      (r as any).active !== false && (
+        r.unit.toLowerCase().includes(destSearch.toLowerCase()) ||
+        r.name.toLowerCase().includes(destSearch.toLowerCase())
+      )
     ).slice(0, 5);
-  }, [destSearch]);
+  }, [destSearch, unitPhones]);
 
   // Search for frequent visitors linked to the current destination
   const matchingFrequents = useMemo(() => {
@@ -1972,6 +2329,7 @@ export function AccessForm({
                     setShowDestSuggestions(true);
                   }}
                   onFocus={() => setShowDestSuggestions(true)}
+                  onKeyDown={(e) => handleKeyDown(e, 'destination')}
                 />
                 <AnimatePresence>
                   {showDestSuggestions && filteredResidents.length > 0 && (
@@ -1999,6 +2357,8 @@ export function AccessForm({
                   )}
                 </AnimatePresence>
               </div>
+
+              {renderMoradorSolicitanteSection()}
 
               {/* HELPER BOX & QUICK TICKER */}
               <div className="p-3 bg-amber-50 rounded-xl border border-amber-200/50 flex flex-col items-center gap-1.5 text-center select-none shadow-sm">
@@ -2065,7 +2425,7 @@ export function AccessForm({
                           initial={{ opacity: 0, scale: 0.95 }}
                           animate={{ opacity: 1, scale: 1 }}
                           exit={{ opacity: 0, scale: 0.95 }}
-                          className="absolute z-40 left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden ring-4 ring-slate-900/5"
+                          className="absolute z-40 left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden ring-4 ring-slate-900/5 text-left"
                         >
                           {filteredResidents.map((r, i) => (
                             <button
@@ -2084,6 +2444,10 @@ export function AccessForm({
                         </motion.div>
                       )}
                     </AnimatePresence>
+                  </div>
+
+                  <div className="col-span-12">
+                    {renderMoradorSolicitanteSection()}
                   </div>
 
                   <div className="col-span-3 relative group">
@@ -2334,70 +2698,281 @@ export function AccessForm({
         {/* MAIN OPERATIONAL FORM FOR NON-UBER TYPES */}
         {type !== 'uber' && (
           <form id="access-form" onSubmit={handleSubmit} className="space-y-1.5">
-            <div className="grid grid-cols-2 gap-3 pb-0">
-              <div className="relative group">
-                <Home className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
-                <input
-                  ref={el => inputRefs.current.destination = el}
-                  autoFocus={!isDestInitialFilled}
-                  type="text"
-                  placeholder="CASA/APTO"
-                  className="w-full h-[46px] pl-12 pr-4 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-base font-black uppercase tracking-tighter"
-                  value={destSearch}
-                  onChange={(e) => {
-                    setDestSearch(e.target.value.toUpperCase());
-                    setShowDestSuggestions(true);
-                  }}
-                  onFocus={() => setShowDestSuggestions(true)}
-                  onKeyDown={(e) => handleKeyDown(e, 'destination')}
-                />
-                <AnimatePresence>
-                  {showDestSuggestions && filteredResidents.length > 0 && (
-                    <motion.div
-                      initial={{ opacity: 0, scale: 0.95 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.95 }}
-                      className="absolute z-40 left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden ring-4 ring-slate-900/5"
-                    >
-                      {filteredResidents.map((r, i) => (
-                        <button
-                          key={i}
-                          type="button"
-                          className="w-full px-4 py-3 text-left hover:bg-blue-50 flex justify-between items-center border-b border-slate-50 last:border-0"
-                          onClick={() => {
-                            setDestSearch(r.unit);
-                            setShowDestSuggestions(false);
-                          }}
+            {type === 'delivery' ? (
+              <div className="space-y-2 pb-0 animate-in fade-in duration-200">
+                {/* 3 fields horizontally side-by-side in a single row */}
+                <div className="flex gap-2 items-center w-full">
+                  {/* CASA/APTO: compactness 20% */}
+                  <div className="w-[20%] min-w-0 relative group">
+                    <Home className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
+                    <input
+                      id="delivery-destination-input"
+                      ref={el => inputRefs.current.destination = el}
+                      autoFocus={!isDestInitialFilled}
+                      type="text"
+                      placeholder="CASA/APTO"
+                      className="w-full h-[46px] pl-8 pr-1.5 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-xs font-black uppercase tracking-tighter text-center"
+                      value={destSearch}
+                      onChange={(e) => {
+                        setDestSearch(e.target.value.toUpperCase());
+                        setShowDestSuggestions(true);
+                      }}
+                      onFocus={() => setShowDestSuggestions(true)}
+                      onKeyDown={(e) => handleKeyDown(e, 'destination')}
+                    />
+                    <AnimatePresence>
+                      {showDestSuggestions && filteredResidents.length > 0 && (
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          className="absolute z-40 left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden ring-4 ring-slate-900/5 text-left"
                         >
-                          <span className="font-black text-slate-900 text-sm tracking-tight">{r.unit}</span>
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{r.name}</span>
-                        </button>
-                      ))}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
+                          {filteredResidents.map((r, i) => (
+                            <button
+                              key={i}
+                              type="button"
+                              className="w-full px-4 py-3 text-left hover:bg-blue-50 flex justify-between items-center border-b border-slate-50 last:border-0"
+                              onClick={() => {
+                                setDestSearch(r.unit);
+                                setShowDestSuggestions(false);
+                              }}
+                            >
+                              <span className="font-black text-slate-900 text-sm tracking-tight">{r.unit}</span>
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{r.name}</span>
+                            </button>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
 
-              <div className="relative group">
-                <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
-                <input
-                  ref={el => inputRefs.current.name = el}
-                  autoFocus={isDestInitialFilled && !(initialData && initialData.name)}
-                  type="text"
-                  placeholder={type === 'delivery' ? "NOME ENTREGADOR" : "NOME COMPLETO"}
-                  className="w-full h-[46px] pl-12 pr-10 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-base font-bold uppercase tracking-tight"
-                  value={formData.name}
-                  onChange={(e) => {
-                    setFormData({ ...formData, name: e.target.value.toUpperCase() });
-                    setActiveSuggestionField('name');
-                  }}
-                  onFocus={() => setActiveSuggestionField('name')}
-                  onBlur={() => setTimeout(() => setActiveSuggestionField(null), 200)}
-                  onKeyDown={(e) => handleKeyDown(e, 'name')}
-                />
-                {renderSmartSuggestions('name')}
+                  {/* NOME DO ENTREGADOR: principal 45% */}
+                  <div className="w-[45%] min-w-0 relative group">
+                    <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
+                    <input
+                      id="delivery-entregador-name"
+                      ref={el => inputRefs.current.name = el}
+                      autoFocus={isDestInitialFilled && !(initialData && initialData.name)}
+                      type="text"
+                      placeholder="NOME ENTREGADOR"
+                      className="w-full h-[46px] pl-9 pr-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-xs font-bold uppercase tracking-tight"
+                      value={formData.name}
+                      onChange={(e) => {
+                        setFormData({ ...formData, name: e.target.value.toUpperCase() });
+                        setActiveSuggestionField('name');
+                      }}
+                      onFocus={() => setActiveSuggestionField('name')}
+                      onBlur={() => setTimeout(() => setActiveSuggestionField(null), 200)}
+                      onKeyDown={(e) => handleKeyDown(e, 'name')}
+                    />
+                    {renderSmartSuggestions('name')}
+                  </div>
+
+                  {/* SOLICITADO POR: 35% */}
+                  <div className="w-[35%] min-w-0 relative group">
+                    <div 
+                      id="delivery-solicitado-por-container"
+                      onClick={() => {
+                        // Reset selection to let them alter/select again
+                        setResidentSelectionConfirmed(false);
+                        setIsManualResident(true);
+                      }}
+                      className={cn(
+                        "w-full h-[46px] px-3 bg-slate-50 border-2 border-slate-100 rounded-xl flex items-center transition-all cursor-pointer hover:border-slate-300 select-none",
+                        residentSelectionConfirmed && formData.morador_solicitante_nome
+                          ? "bg-emerald-50 border-emerald-200" 
+                          : "bg-slate-50 border-slate-100"
+                      )}
+                    >
+                      <span className="text-xs font-black truncate text-slate-700 w-full text-center">
+                        {residentSelectionConfirmed && formData.morador_solicitante_nome ? (
+                          <span className="text-emerald-800 tracking-tight text-[10px]">
+                            SOLICITADO POR: {formData.morador_solicitante_nome}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-bold uppercase tracking-tight text-[10px]">
+                            👤 SOLICITADO POR
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* TEMPORARY SELECTION / INPUT BELOW THE FIRST ROW */}
+                {!residentSelectionConfirmed && destSearch.trim() && (
+                  <div id="delivery-residents-temporary-container" className="border border-slate-200 bg-slate-50/50 rounded-xl p-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                    {isLoadingResidents ? (
+                      <div className="p-2 text-center animate-pulse">
+                        <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                          Buscando moradores no Supabase em tempo real...
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Multiple residents list */}
+                        {activeResidentsForUnit.length > 1 && !isManualResident && (
+                          <div>
+                            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 flex justify-between items-center">
+                              <span>Selecione o Morador Solicitante:</span>
+                              <span className="text-blue-600 animate-pulse text-[9px]">Use ↑↓ e Enter</span>
+                            </div>
+                            <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
+                              {activeResidentsForUnit.map((res, idx) => (
+                                <button
+                                  id={`delivery-res-btn-${res.id}`}
+                                  key={res.id}
+                                  type="button"
+                                  className={cn(
+                                    "w-full px-3 py-2 text-left rounded-lg text-xs font-bold transition flex justify-between items-center",
+                                    idx === selectedResidentIndex
+                                      ? "bg-blue-600 text-white shadow-md font-black"
+                                      : "bg-white hover:bg-slate-100 text-slate-800 border border-slate-100"
+                                  )}
+                                  onClick={() => selecionarMorador(res)}
+                                >
+                                  <span>{res.residentName}</span>
+                                  {idx === selectedResidentIndex && <span className="text-[10px]">⏎</span>}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* No residents found */}
+                        {activeResidentsForUnit.length === 0 && !isManualResident && (
+                          <div className="text-center py-2">
+                            <p className="text-[10px] font-black text-red-500 uppercase tracking-widest mb-2">
+                              Nenhum morador encontrado para esta unidade.
+                            </p>
+                            <button
+                              id="delivery-f2-manual-btn"
+                              type="button"
+                              onClick={() => {
+                                setIsManualResident(true);
+                                setFormData(prev => ({ ...prev, morador_solicitante_nome: '' }));
+                              }}
+                              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-lg text-[10px] uppercase tracking-widest transition shadow-sm"
+                            >
+                              F2: Informar Manualmente
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Manual entry input */}
+                        {isManualResident && (
+                          <div className="flex flex-col gap-1.5 p-1">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                              Nome do Morador Solicitante (Manual):
+                            </label>
+                            <div className="flex gap-2">
+                              <input
+                                id="delivery-manual-resident-input"
+                                autoFocus
+                                type="text"
+                                placeholder="NOME DO MORADOR"
+                                className="flex-1 h-[34px] px-3 bg-white border border-slate-300 rounded-lg text-xs font-bold uppercase focus:border-blue-500 outline-none"
+                                value={formData.morador_solicitante_nome || ''}
+                                onChange={(e) => setFormData(prev => ({ ...prev, morador_solicitante_nome: e.target.value.toUpperCase() }))}
+                                onKeyDown={(e) => {
+                                  e.stopPropagation();
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    setResidentSelectionConfirmed(true);
+                                    advanceFromField('destination');
+                                  }
+                                }}
+                              />
+                              <button
+                                id="delivery-manual-resident-confirm-btn"
+                                type="button"
+                                onClick={() => {
+                                  setResidentSelectionConfirmed(true);
+                                  advanceFromField('destination');
+                                }}
+                                className="h-[34px] px-3 bg-blue-600 text-white font-black rounded-lg text-[10px] uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition"
+                              >
+                                Confirmar
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
-            </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 pb-0 animate-in fade-in duration-200">
+                <div className="relative group">
+                  <Home className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
+                  <input
+                    ref={el => inputRefs.current.destination = el}
+                    autoFocus={!isDestInitialFilled}
+                    type="text"
+                    placeholder="CASA/APTO"
+                    className="w-full h-[46px] pl-12 pr-4 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-base font-black uppercase tracking-tighter"
+                    value={destSearch}
+                    onChange={(e) => {
+                      setDestSearch(e.target.value.toUpperCase());
+                      setShowDestSuggestions(true);
+                    }}
+                    onFocus={() => setShowDestSuggestions(true)}
+                    onKeyDown={(e) => handleKeyDown(e, 'destination')}
+                  />
+                  <AnimatePresence>
+                    {showDestSuggestions && filteredResidents.length > 0 && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className="absolute z-40 left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden ring-4 ring-slate-900/5 text-left"
+                      >
+                        {filteredResidents.map((r, i) => (
+                          <button
+                            key={i}
+                            type="button"
+                            className="w-full px-4 py-3 text-left hover:bg-blue-50 flex justify-between items-center border-b border-slate-50 last:border-0"
+                            onClick={() => {
+                              setDestSearch(r.unit);
+                              setShowDestSuggestions(false);
+                            }}
+                          >
+                            <span className="font-black text-slate-900 text-sm tracking-tight">{r.unit}</span>
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{r.name}</span>
+                          </button>
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                <div className="col-span-2">
+                  {renderMoradorSolicitanteSection()}
+                </div>
+
+                <div className="relative group">
+                  <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
+                  <input
+                    ref={el => inputRefs.current.name = el}
+                    autoFocus={isDestInitialFilled && !(initialData && initialData.name)}
+                    type="text"
+                    placeholder="NOME COMPLETO"
+                    className="w-full h-[46px] pl-12 pr-10 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-base font-bold uppercase tracking-tight"
+                    value={formData.name}
+                    onChange={(e) => {
+                      setFormData({ ...formData, name: e.target.value.toUpperCase() });
+                      setActiveSuggestionField('name');
+                    }}
+                    onFocus={() => setActiveSuggestionField('name')}
+                    onBlur={() => setTimeout(() => setActiveSuggestionField(null), 200)}
+                    onKeyDown={(e) => handleKeyDown(e, 'name')}
+                  />
+                  {renderSmartSuggestions('name')}
+                </div>
+              </div>
+            )}
 
             {/* RG / CPF unified field + PRISMA field in the same row if visitor/service */}
             {type === 'visitor' || type === 'service' ? (

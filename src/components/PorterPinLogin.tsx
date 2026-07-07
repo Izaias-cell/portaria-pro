@@ -1,88 +1,45 @@
 import React, { useState } from 'react';
-import { Shield, Check, X, Lock, KeyRound, Building, AlertTriangle } from 'lucide-react';
+import { Shield, AlertTriangle, KeyRound, Mail, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { Porteiro } from '../types';
 
 interface PorterPinLoginProps {
   condoName: string;
-  porteiros: Porteiro[];
-  onLogin: (pin: string) => boolean;
+  onLogin: (email: string, pin: string) => Promise<boolean>;
 }
 
-export function PorterPinLogin({ condoName, porteiros, onLogin }: PorterPinLoginProps) {
-  const [pin, setPin] = useState<string>('');
+export function PorterPinLogin({ condoName, onLogin }: PorterPinLoginProps) {
+  const [email, setEmail] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [isError, setIsError] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  // Filter porteiros belonging to current condo for the helper display case-insensitively
-  const currentCondoPorters = porteiros.filter(
-    p => p.condoName && p.condoName.toLowerCase() === condoName.toLowerCase() && p.active
-  );
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim() || !password.trim()) return;
 
-  const handleKeyPress = (num: string) => {
-    if (pin.length < 6) {
-      const nextPin = pin + num;
-      setPin(nextPin);
-      
-      // Auto-submit on 4 or 6 digits if matched
-      if (nextPin.length === 4) {
-        // Only auto-submit at 4 digits if there is an active porter in this condo with this exact 4-digit PIN
-        const hasMatchingActivePorter = porteiros.some(
-          p => p.pin === nextPin && p.active && p.condoName && p.condoName.toLowerCase() === condoName.toLowerCase()
-        );
-        if (hasMatchingActivePorter) {
-          const success = onLogin(nextPin);
-          if (success) {
-            setPin('');
-          } else {
-            setIsError(true);
-            setTimeout(() => {
-              setIsError(false);
-              setPin('');
-            }, 800);
-          }
-        }
-      } else if (nextPin.length === 6) {
-        const success = onLogin(nextPin);
-        if (success) {
-          setPin('');
-        } else {
-          setIsError(true);
-          setTimeout(() => {
-            setIsError(false);
-            setPin('');
-          }, 800);
-        }
-      }
-    }
-  };
+    setIsLoading(true);
+    setIsError(false);
 
-  const handleClear = () => {
-    setPin('');
-  };
-
-  const handleBackspace = () => {
-    setPin(prev => prev.slice(0, -1));
-  };
-
-  const handleManualSubmit = () => {
-    if (pin.length >= 4) {
-      const success = onLogin(pin);
-      if (success) {
-        setPin('');
-      } else {
+    try {
+      const success = await onLogin(email.trim(), password.trim());
+      setIsLoading(false);
+      if (!success) {
         setIsError(true);
-        setTimeout(() => {
-          setIsError(false);
-          setPin('');
-        }, 850);
+        setErrorMessage('E-mail ou senha inválidos.');
       }
+    } catch (err: any) {
+      setIsLoading(false);
+      setIsError(true);
+      setErrorMessage(err.message || 'Erro de conexão com o servidor.');
     }
   };
 
   return (
-    <div className="fixed inset-0 z-[50] flex items-center justify-center bg-slate-950 overflow-y-auto p-4 md:p-6 select-none leading-normal">
-      {/* Absolute decorative gradient backdrops */}
+    <div className="fixed inset-0 z-[50] flex items-center justify-center bg-slate-950 overflow-y-auto p-4 md:p-6 select-none leading-normal font-sans">
+      {/* Decorative gradient backdrops */}
       <div className="absolute top-1/4 left-1/4 w-[300px] h-[300px] bg-blue-500/10 rounded-full blur-[100px] pointer-events-none" />
       <div className="absolute bottom-1/4 right-1/4 w-[250px] h-[250px] bg-indigo-500/10 rounded-full blur-[100px] pointer-events-none" />
 
@@ -90,148 +47,91 @@ export function PorterPinLogin({ condoName, porteiros, onLogin }: PorterPinLogin
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.3 }}
-        className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-[2.5rem] shadow-2xl p-6 sm:p-8 flex flex-col items-center relative z-10"
+        className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-[2rem] shadow-2xl p-6 sm:p-8 flex flex-col items-center relative z-10"
       >
         {/* Emblem */}
-        <div className="w-16 h-16 bg-blue-500/10 border-2 border-blue-500/25 rounded-3xl flex items-center justify-center text-blue-400 mb-4 animate-pulse">
+        <div className="w-16 h-16 bg-blue-500/10 border-2 border-blue-500/25 rounded-3xl flex items-center justify-center text-blue-400 mb-4">
           <Shield className="w-8 h-8 font-black" />
         </div>
 
         {/* Header Title */}
         <div className="text-center space-y-2 mb-6">
-          <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight uppercase">
-            Início de Plantão
+          <h2 className="text-2xl font-black text-white tracking-tight uppercase">
+            Acesso ao Sistema
           </h2>
           <div className="inline-flex items-center gap-1.5 bg-slate-800/80 px-4 py-1.5 rounded-full border border-slate-700/50">
-            <Building className="w-3.5 h-3.5 text-blue-400" />
             <span className="text-[10px] font-black uppercase text-slate-300 tracking-wider">
               {condoName}
             </span>
           </div>
-          <p className="text-slate-400 text-xs font-medium max-w-xs mx-auto pt-2">
-            Insira seu PIN numérico de 4 ou 6 dígitos para autenticar a jornada neste computador.
-          </p>
         </div>
 
-        {/* PIN Entered Bullets Display */}
-        <div className={cn(
-          "flex justify-center items-center gap-3 w-full bg-slate-950/60 p-4 rounded-3xl border border-slate-800/80 mb-6 relative overflow-hidden",
-          isError ? "border-red-500 shadow-md shadow-red-500/10 animate-shake" : "border-slate-800"
-        )}>
-          {/* Subtle error text banner */}
+        {/* Form Container */}
+        <form onSubmit={handleSubmit} className="w-full space-y-4">
+          <div>
+            <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1.5">
+              E-mail de Acesso
+            </label>
+            <div className="relative">
+              <Mail className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-500" />
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="exemplo@email.com"
+                className="w-full pl-11 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-semibold text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/35 focus:border-blue-500 transition-all lowercase"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1.5">
+              Senha de Acesso
+            </label>
+            <div className="relative">
+              <KeyRound className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-500" />
+              <input
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full pl-11 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-semibold text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/35 focus:border-blue-500 transition-all font-mono tracking-widest"
+              />
+            </div>
+          </div>
+
+          {/* Error message Banner */}
           <AnimatePresence>
             {isError && (
               <motion.div 
-                initial={{ opacity: 0, y: -20 }}
+                initial={{ opacity: 0, y: -10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="absolute inset-0 bg-red-950/90 flex items-center justify-center gap-2 text-red-100 font-extrabold text-[11px] uppercase tracking-wider"
+                exit={{ opacity: 0, y: -10 }}
+                className="bg-red-950/50 border border-red-500/30 p-3 rounded-xl flex items-center gap-2.5 text-red-200 font-bold text-[11px] uppercase tracking-wider"
               >
-                <AlertTriangle className="w-4 h-4 text-red-400 scale-110" />
-                PIN Inválido ou Negado
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                <span>{errorMessage}</span>
               </motion.div>
             )}
           </AnimatePresence>
 
-          {/* Render 6 placeholders, filled if length is typed */}
-          {[0, 1, 2, 3, 4, 5].map((idx) => {
-            const hasValue = pin.length > idx;
-            return (
-              <div
-                key={idx}
-                className={cn(
-                  "w-4 h-4 rounded-full border-2 transition-all duration-150 flex items-center justify-center",
-                  hasValue 
-                    ? "bg-blue-500 border-blue-500 scale-125" 
-                    : "border-slate-700 bg-slate-900"
-                )}
-              />
-            );
-          })}
-        </div>
-
-        {/* Keyboard layout */}
-        <div className="grid grid-cols-3 gap-3 w-full max-w-xs mb-6">
-          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-            <button
-              key={num}
-              type="button"
-              onClick={() => handleKeyPress(num.toString())}
-              className="h-14 sm:h-16 bg-slate-800/60 hover:bg-slate-800 hover:border-slate-700 active:scale-95 border border-slate-800 text-lg sm:text-xl font-black text-slate-100 rounded-2xl transition-all uppercase shadow-sm"
-            >
-              {num}
-            </button>
-          ))}
           <button
-            type="button"
-            onClick={handleClear}
-            className="h-14 sm:h-16 bg-slate-900 hover:bg-slate-800 hover:border-slate-700 active:scale-95 border border-slate-800 text-xs font-black text-rose-400 rounded-2xl transition-all uppercase shadow-sm"
+            type="submit"
+            disabled={isLoading}
+            className="w-full bg-blue-600 hover:bg-blue-500 active:scale-95 border border-blue-500 py-3.5 px-6 rounded-2xl text-xs font-black text-white uppercase tracking-widest transition-all mt-6 flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 disabled:opacity-50 disabled:pointer-events-none"
           >
-            Limpar
+            {isLoading ? (
+              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            ) : (
+              <>
+                <KeyRound className="w-4 h-4" />
+                <span>Entrar</span>
+              </>
+            )}
           </button>
-          <button
-            type="button"
-            onClick={() => handleKeyPress('0')}
-            className="h-14 sm:h-16 bg-slate-800/60 hover:bg-slate-800 hover:border-slate-700 active:scale-95 border border-slate-800 text-lg sm:text-xl font-black text-slate-100 rounded-2xl transition-all uppercase shadow-sm"
-          >
-            0
-          </button>
-          <button
-            type="button"
-            onClick={handleBackspace}
-            className="h-14 sm:h-16 bg-slate-900 hover:bg-slate-800 hover:border-slate-700 active:scale-95 border border-slate-800 text-xs font-black text-slate-350 rounded-2xl transition-all uppercase shadow-sm"
-          >
-            Apagar
-          </button>
-        </div>
-
-        {/* Enter manually if they hit backspace or type 5 digits */}
-        {pin.length >= 4 && (
-          <button
-            onClick={handleManualSubmit}
-            className="w-full max-w-xs bg-blue-600 hover:bg-blue-500 active:scale-95 border border-blue-500 py-3.5 px-6 rounded-2xl text-xs font-black text-white uppercase tracking-widest transition-all mb-4 mt-2 flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20"
-          >
-            <KeyRound className="w-4 h-4" />
-            Confirmar Acesso
-          </button>
-        )}
-
-        {/* Test help area */}
-        <div className="w-full mt-4 border-t border-slate-850 pt-5 bg-slate-900/60 text-slate-400 rounded-b-2xl">
-          <p className="text-center text-[10px] font-black uppercase text-slate-500 tracking-wider mb-3">
-            🚪 Ambientes de Teste & Plantões Cadastrados
-          </p>
-          <div className="grid grid-cols-2 gap-2 text-[10px] font-medium uppercase text-slate-400 px-2 leading-relaxed">
-            {porteiros.map((p) => {
-              const isCurrentCondo = p.condoName && p.condoName.toLowerCase() === condoName.toLowerCase();
-              return (
-                <button 
-                  type="button"
-                  key={p.id} 
-                  onClick={() => {
-                    if (isCurrentCondo) {
-                      onLogin(p.pin);
-                    }
-                  }}
-                  className={cn(
-                    "p-2 bg-slate-950/80 rounded-xl border border-slate-800/60 flex flex-col gap-0.5 text-left w-full transition-all duration-150 active:scale-95",
-                    !isCurrentCondo ? "opacity-40 cursor-not-allowed" : "hover:border-blue-500/50 hover:bg-slate-950 cursor-pointer"
-                  )}
-                  disabled={!isCurrentCondo}
-                >
-                  <span className="font-extrabold text-slate-200 truncate">{p.name}</span>
-                  <span className="text-[9px] text-slate-500 truncate leading-none">{p.role}</span>
-                  <span className="text-[9px] text-blue-400 font-extrabold mt-1">
-                    PIN: {p.pin} • {isCurrentCondo ? 'Simular 🔓' : 'Outro Condo'}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          <div className="mt-3.5 text-center text-[9px] text-slate-500 bg-slate-950/40 py-2 rounded-xl border border-slate-800/30">
-            ⚠️ Em conformidade com as regras operacionais de segurança.
-          </div>
-        </div>
+        </form>
       </motion.div>
     </div>
   );

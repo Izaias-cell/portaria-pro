@@ -14,12 +14,14 @@ import {
   Power, 
   Lock, 
   Unlock,
-  ClipboardList
+  ClipboardList,
+  Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { Porteiro } from '../types';
+import { supabase, tempSupabase, getProfileTableColumns, buildProfilePayload } from '../lib/supabase';
 
 interface PorterManagerProps {
   porteiros: Porteiro[];
@@ -41,6 +43,9 @@ export function PorterManager({
   const [searchTerm, setSearchTerm] = useState('');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingPorterId, setEditingPorterId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   
   // Form State
   const [name, setName] = useState('');
@@ -70,6 +75,9 @@ export function PorterManager({
     setEmail('');
     setEditingPorterId(null);
     setIsFormOpen(false);
+    setSaveError(null);
+    setSaveSuccess(null);
+    setIsSaving(false);
   };
 
   const handleEditInit = (porter: Porteiro) => {
@@ -78,10 +86,12 @@ export function PorterManager({
     setPin(porter.pin);
     setRole(porter.role);
     setActive(porter.active);
-    setPorterCondo(porter.condoName);
+    setPorterCondo(porter.condoName || condoName);
     setNotes(porter.notes || '');
     setPhone(porter.phone || '');
     setEmail(porter.email || '');
+    setSaveError(null);
+    setSaveSuccess(null);
     setIsFormOpen(true);
   };
 
@@ -95,35 +105,53 @@ export function PorterManager({
     return r === 'síndico' || r === 'sindico' || r.includes('sindico') || r.includes('síndico');
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (readOnly) return;
+    setSaveError(null);
 
     const trimmedName = name.trim();
     const trimmedPin = pin.trim();
+    const trimmedEmail = email.trim();
 
+    // 1. Validations
     if (!trimmedName) {
       toast.error('Preencha o Nome Completo.');
       return;
     }
 
-    if (!/^\d{4}$|^\d{6}$/.test(trimmedPin)) {
-      toast.error('PIN Inválido!', {
-        description: 'O PIN deve conter exatamente 4 ou 6 caracteres numéricos.'
+    if (!trimmedEmail) {
+      toast.error('Preencha o E-mail de Acesso.');
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      toast.error('E-mail inválido.', {
+        description: 'Por favor, insira um e-mail com formato válido.'
       });
       return;
     }
 
-    // Check unique PIN among ALL active porteiros in that condo
-    const duplicate = porteiros.find(
-      p => p.pin === trimmedPin && 
-           p.id !== editingPorterId && 
-           p.condoName.toLowerCase() === porterCondo.toLowerCase() &&
-           p.active
+    if (trimmedPin.length < 6) {
+      toast.error('Senha muito curta!', {
+        description: 'A senha deve conter pelo menos 6 caracteres.'
+      });
+      return;
+    }
+
+    if (!role) {
+      toast.error('Selecione uma função.');
+      return;
+    }
+
+    // Check unique email among ALL users
+    const duplicateEmail = porteiros.find(
+      p => p.email && p.email.toLowerCase() === trimmedEmail.toLowerCase() && p.id !== editingPorterId
     );
-    if (duplicate) {
-      toast.error('PIN já está em uso!', {
-        description: `Este PIN pertence ao usuário ativo ${duplicate.name} no condomínio ${duplicate.condoName}.`
+    if (duplicateEmail) {
+      toast.error('E-mail já cadastrado!', {
+        description: `Este e-mail de acesso já pertence ao usuário ${duplicateEmail.name}.`
       });
       return;
     }
@@ -153,56 +181,237 @@ export function PorterManager({
       }
     }
 
-    if (editingPorterId) {
-      // Edit
-      const updated = porteiros.map(p => {
-        if (p.id === editingPorterId) {
-          return {
-            ...p,
-            name: trimmedName,
-            pin: trimmedPin,
-            role,
-            active,
-            condoName: porterCondo,
-            notes: notes.trim() || undefined,
-            phone: phone.trim() || undefined,
-            email: email.trim() || undefined
-          };
+    setIsSaving(true);
+
+    try {
+      let funcaoDb = 'porteiro';
+      const roleLower = role.toLowerCase();
+      if (roleLower.includes('admin') || roleLower.includes('supervisor') || roleLower.includes('geral')) {
+        funcaoDb = 'admin';
+      } else if (roleLower.includes('sindico') || roleLower.includes('síndico')) {
+        funcaoDb = 'sindico';
+      }
+
+      // Descobre quais colunas existem de fato na tabela perfis
+      const cols = await getProfileTableColumns();
+      console.log('Colunas reais detectadas em perfis:', cols);
+
+      if (editingPorterId) {
+        // --- EDITING EXISTING USER ---
+        const notesWithPwd = `${notes.trim()} [PWD:${trimmedPin}]`.trim();
+        const rawPayload: any = {
+          id: editingPorterId,
+          nome: trimmedName,
+          email: trimmedEmail,
+          funcao: funcaoDb,
+          active: active !== false,
+          telefone: phone.trim() || '',
+          phone: phone.trim() || '',
+          observacoes: notesWithPwd,
+          notes: notesWithPwd,
+          pin: trimmedPin,
+          password: trimmedPin
+        };
+
+        const updatePayload = buildProfilePayload(rawPayload, cols);
+
+        let { error: profileError } = await supabase
+          .from('perfis')
+          .update(updatePayload)
+          .eq('id', editingPorterId);
+
+        if (profileError) {
+          console.warn('Erro ao atualizar perfil com colunas mapeadas, tentando simplificado:', profileError.message);
+          const { error: minimalError } = await supabase
+            .from('perfis')
+            .update({
+              nome: trimmedName,
+              email: trimmedEmail,
+              funcao: funcaoDb,
+              active: active !== false,
+              observacoes: notesWithPwd,
+              notes: notesWithPwd
+            })
+            .eq('id', editingPorterId);
+          profileError = minimalError;
         }
-        return p;
-      });
-      onUpdatePorteiros(updated);
-      
-      // LOG AUDIT
-      onRegisterLog(`Quem editou cadastro: ${activePorterName} editou o cadastro do usuário "${trimmedName}" (${role}).`);
 
-      toast.success('Cadastro editado com sucesso!', {
-        description: `Dados de ${trimmedName} foram devidamente atualizados.`
-      });
-    } else {
-      // Create new
-      const newPorter: Porteiro = {
-        id: crypto.randomUUID(),
-        name: trimmedName,
-        pin: trimmedPin,
-        role,
-        active,
-        condoName: porterCondo,
-        notes: notes.trim() || undefined,
-        phone: phone.trim() || undefined,
-        email: email.trim() || undefined
-      };
-      onUpdatePorteiros([...porteiros, newPorter]);
+        if (profileError) {
+          throw new Error(`Erro ao atualizar perfil no banco de dados: ${profileError.message}`);
+        }
 
-      // LOG AUDIT
-      onRegisterLog(`Quem criou cadastro: ${activePorterName} criou o cadastro de usuário para "${trimmedName}" (${role}).`);
+        const updated = porteiros.map(p => {
+          if (p.id === editingPorterId) {
+            return {
+              ...p,
+              name: trimmedName,
+              pin: trimmedPin,
+              role,
+              active,
+              condoName: porterCondo,
+              notes: notes.trim() || undefined,
+              phone: phone.trim() || undefined,
+              email: trimmedEmail
+            };
+          }
+          return p;
+        });
+        
+        onUpdatePorteiros(updated);
+        
+        // LOG AUDIT
+        onRegisterLog(`Quem editou cadastro: ${activePorterName} editou o cadastro do usuário "${trimmedName}" (${role}).`);
 
-      toast.success('Usuário cadastrado com sucesso!', {
-        description: `${trimmedName} agora tem acesso ao condomínio ${porterCondo}.`
+        setSaveSuccess('Cadastro atualizado com sucesso!');
+        toast.success('Cadastro editado com sucesso!', {
+          description: `Dados de ${trimmedName} foram devidamente atualizados.`
+        });
+        
+        // Reset fields but keep success state visible
+        setName('');
+        setPin('');
+        setRole('Porteiro');
+        setActive(true);
+        setNotes('');
+        setPhone('');
+        setEmail('');
+        setEditingPorterId(null);
+        setSaveError(null);
+      } else {
+        // --- CREATING NEW USER ---
+        let authUserId = '';
+        let createdUser = null;
+
+        // 1. Try to invoke safe Supabase Edge Function first
+        try {
+          console.log('Tentando cadastrar usuário via Supabase Edge Function / secure endpoint...');
+          const { data: edgeData, error: edgeError } = await supabase.functions.invoke('create-user', {
+            body: {
+              email: trimmedEmail,
+              password: trimmedPin,
+              name: trimmedName,
+              role: funcaoDb,
+              phone: phone.trim() || undefined,
+              condoName: porterCondo
+            }
+          });
+
+          if (!edgeError && edgeData?.user) {
+            createdUser = edgeData.user;
+            authUserId = edgeData.user.id;
+            console.log('Usuário cadastrado com sucesso via Edge Function:', createdUser);
+          } else if (edgeError) {
+            console.warn('Erro retornado pela Edge Function, tentando fallback:', edgeError);
+          }
+        } catch (edgeErr) {
+          console.warn('Erro ao invocar Edge Function (pode não estar implantada). Usando fallback seguro:', edgeErr);
+        }
+
+        // Fallback: Register in Supabase Auth directly using tempSupabase client
+        if (!createdUser) {
+          const { data: signUpData, error: signUpError } = await tempSupabase.auth.signUp({
+            email: trimmedEmail,
+            password: trimmedPin
+          });
+
+          if (signUpError) {
+            throw new Error(`Erro ao cadastrar usuário no Supabase Auth: ${signUpError.message}`);
+          }
+
+          if (!signUpData.user) {
+            throw new Error('Falha ao obter dados do usuário do Supabase Auth.');
+          }
+
+          createdUser = signUpData.user;
+          authUserId = signUpData.user.id;
+        }
+
+        // 2. Insert the profile in the perfis table using the registered user's ID
+        const notesWithPwd = `${notes.trim()} [PWD:${trimmedPin}]`.trim();
+        const rawPayload: any = {
+          id: authUserId,
+          nome: trimmedName,
+          email: trimmedEmail,
+          funcao: funcaoDb,
+          active: active !== false,
+          telefone: phone.trim() || '',
+          phone: phone.trim() || '',
+          observacoes: notesWithPwd,
+          notes: notesWithPwd,
+          pin: trimmedPin,
+          password: trimmedPin
+        };
+
+        const insertPayload = buildProfilePayload(rawPayload, cols);
+
+        let { error: profileError } = await supabase
+          .from('perfis')
+          .insert(insertPayload);
+
+        if (profileError) {
+          console.warn('Erro ao criar perfil completo, tentando simplificado:', profileError.message);
+          const { error: minimalError } = await supabase
+            .from('perfis')
+            .insert({
+              id: authUserId,
+              nome: trimmedName,
+              email: trimmedEmail,
+              funcao: funcaoDb,
+              active: active !== false,
+              observacoes: notesWithPwd,
+              notes: notesWithPwd
+            });
+          profileError = minimalError;
+        }
+
+        if (profileError) {
+          throw new Error(`Erro ao salvar perfil no banco de dados: ${profileError.message}`);
+        }
+
+        // 3. Add to local list and notify parent with the real auth ID
+        const newPorter: Porteiro = {
+          id: authUserId, // Store the actual Supabase Auth UID!
+          name: trimmedName,
+          pin: trimmedPin,
+          role,
+          active,
+          condoName: porterCondo,
+          notes: notes.trim() || undefined,
+          phone: phone.trim() || undefined,
+          email: trimmedEmail
+        };
+
+        onUpdatePorteiros([...porteiros, newPorter]);
+
+        // LOG AUDIT
+        onRegisterLog(`Quem criou cadastro: ${activePorterName} criou o cadastro de usuário para "${trimmedName}" (${role}).`);
+
+        setSaveSuccess('Usuário cadastrado com sucesso!');
+        toast.success('Usuário cadastrado com sucesso!', {
+          description: `${trimmedName} agora tem acesso ao condomínio ${porterCondo}.`
+        });
+
+        // Clear input fields but keep success state visible
+        setName('');
+        setPin('');
+        setRole('Porteiro');
+        setActive(true);
+        setNotes('');
+        setPhone('');
+        setEmail('');
+        setEditingPorterId(null);
+        setSaveError(null);
+      }
+    } catch (err: any) {
+      console.error('Erro ao salvar usuário:', err);
+      const msg = err.message || 'Erro inesperado ao salvar os dados.';
+      setSaveError(msg);
+      toast.error('Erro ao salvar usuário', {
+        description: msg
       });
+    } finally {
+      setIsSaving(false);
     }
-
-    resetForm();
   };
 
   const handleDelete = (id: string, porterName: string) => {
@@ -353,25 +562,27 @@ export function PorterManager({
                 <input
                   type="text"
                   required
+                  disabled={isSaving}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Ex: João da Silva Santos"
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500/20 outline-none uppercase placeholder:normal-case text-slate-805"
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500/20 outline-none uppercase placeholder:normal-case text-slate-805 disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>
 
               <div>
                 <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1.5">
-                  PIN de Acesso (4 ou 6 dígitos) *
+                  Senha de Acesso *
                 </label>
                 <input
                   type="text"
                   required
-                  maxLength={6}
+                  maxLength={32}
+                  disabled={isSaving}
                   value={pin}
-                  onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
-                  placeholder="Ex: 1234"
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold tracking-widest focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-805"
+                  onChange={(e) => setPin(e.target.value)}
+                  placeholder="Mínimo 6 caracteres"
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold tracking-widest focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-805 disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>
 
@@ -380,9 +591,10 @@ export function PorterManager({
                   Função / Cargo
                 </label>
                 <select
+                  disabled={isSaving}
                   value={role}
                   onChange={(e) => setRole(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold tracking-normal uppercase focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-850"
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold tracking-normal uppercase focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-850 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <option value="Porteiro">Porteiro</option>
                   <option value="Síndico">Síndico</option>
@@ -399,10 +611,11 @@ export function PorterManager({
                   <input
                     type="text"
                     required
+                    disabled={isSaving}
                     value={porterCondo}
                     onChange={(e) => setPorterCondo(e.target.value)}
                     placeholder="Nome do Condomínio"
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-black uppercase tracking-tight focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-805"
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-black uppercase tracking-tight focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-805 disabled:opacity-60 disabled:cursor-not-allowed"
                   />
                 </div>
                 <p className="text-[9px] font-bold text-slate-400 uppercase mt-1 leading-none tracking-wider">
@@ -416,23 +629,26 @@ export function PorterManager({
                 </label>
                 <input
                   type="text"
+                  disabled={isSaving}
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="Ex: (11) 99999-9999"
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-805"
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-805 disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>
 
               <div>
                 <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1.5">
-                  E-mail (Opcional)
+                  E-mail *
                 </label>
                 <input
                   type="email"
+                  required
+                  disabled={isSaving}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="Ex: usuario@email.com"
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-850"
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-850 disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>
 
@@ -445,9 +661,10 @@ export function PorterManager({
                     <input
                       type="radio"
                       name="active"
+                      disabled={isSaving}
                       checked={active === true}
                       onChange={() => setActive(true)}
-                      className="text-blue-600 focus:ring-blue-500"
+                      className="text-blue-600 focus:ring-blue-500 disabled:opacity-60"
                     />
                     <span className="text-xs font-black uppercase text-emerald-600">Ativo</span>
                   </label>
@@ -455,9 +672,10 @@ export function PorterManager({
                     <input
                       type="radio"
                       name="active"
+                      disabled={isSaving}
                       checked={active === false}
                       onChange={() => setActive(false)}
-                      className="text-blue-600 focus:ring-blue-500"
+                      className="text-blue-600 focus:ring-blue-500 disabled:opacity-60"
                     />
                     <span className="text-xs font-black uppercase text-slate-400">Suspenso</span>
                   </label>
@@ -470,27 +688,48 @@ export function PorterManager({
                 </label>
                 <input
                   type="text"
+                  disabled={isSaving}
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Escala, observações, etc."
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-805"
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-805 disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>
+
+              {saveError && (
+                <div className="md:col-span-2 lg:col-span-3 bg-red-50 border border-red-200 text-red-600 text-xs font-semibold px-4 py-3 rounded-xl flex items-center gap-2">
+                  <AlertTriangle className="w-4.5 h-4.5 text-red-500 shrink-0" />
+                  <span>{saveError}</span>
+                </div>
+              )}
+
+              {saveSuccess && (
+                <div className="md:col-span-2 lg:col-span-3 bg-emerald-50 border border-emerald-200 text-emerald-600 text-xs font-semibold px-4 py-3 rounded-xl flex items-center gap-2">
+                  <Check className="w-4.5 h-4.5 text-emerald-500 shrink-0" />
+                  <span>{saveSuccess}</span>
+                </div>
+              )}
 
               <div className="md:col-span-2 lg:col-span-3 flex justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
+                  disabled={isSaving}
                   onClick={resetForm}
-                  className="px-4 py-2.5 bg-slate-100 text-slate-600 font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-slate-180 transition-all flex items-center gap-1.5"
+                  className="px-4 py-2.5 bg-slate-100 text-slate-600 font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-slate-180 transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-505 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 shadow-md shadow-blue-100"
+                  disabled={isSaving}
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-505 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 shadow-md shadow-blue-100 disabled:bg-blue-400 disabled:cursor-not-allowed"
                 >
-                  <Save className="w-4 h-4" />
-                  Salvar Usuário
+                  {isSaving ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Save className="w-4 h-4" />
+                  )}
+                  {isSaving ? 'Salvando usuário...' : 'Salvar Usuário'}
                 </button>
               </div>
             </form>
@@ -586,7 +825,7 @@ export function PorterManager({
                     <div className="flex items-center gap-2">
                       <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                       <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider">
-                        PIN:
+                        SENHA:
                       </span>
                       <span className="text-xs font-mono font-black tracking-widest text-slate-700">
                         {pinRevealed ? porter.pin : '••••'}

@@ -3,6 +3,7 @@ import { UserPlus, Bike, Wrench, UserCheck, Car } from 'lucide-react';
 import { AccessType } from '../types';
 import { cn } from '../lib/utils';
 import { toast } from '../lib/toast';
+import { supabase } from '../lib/supabase';
 
 interface QuickActionsProps {
   onAction: (type: AccessType) => void;
@@ -12,11 +13,12 @@ interface QuickActionsProps {
   compact?: boolean;
   onUberDrop?: (file: File) => void;
   onDeliveryDrop?: (file: File) => void;
-  onImmediateRelease?: (type: AccessType, unit: string, qty?: number, avisarMorador?: boolean) => void;
+  onImmediateRelease?: (type: AccessType, unit: string, qty?: number, avisarMorador?: boolean, residentName?: string, residentId?: string) => void;
   uberPrintAttached?: string | null;
   onUberPrintAttachedChange?: (base64: string | null) => void;
   onImmediateUberRelease?: (unit: string, printImage: string) => void;
   onQueueUberPrintAction?: (unit: string, printImage: string) => void;
+  unitPhones?: any[];
 }
 
 // React Fiber Traversal and matching utility
@@ -107,7 +109,8 @@ export function QuickActions({
   uberPrintAttached,
   onUberPrintAttachedChange,
   onImmediateUberRelease,
-  onQueueUberPrintAction
+  onQueueUberPrintAction,
+  unitPhones
 }: QuickActionsProps) {
   const [isDragOverUber, setIsDragOverUber] = React.useState(false);
   const [isDragOverDelivery, setIsDragOverDelivery] = React.useState(false);
@@ -125,6 +128,249 @@ export function QuickActions({
   const visitorQtyRef = React.useRef<HTMLInputElement | null>(null);
   const autoQueueTimerRef = React.useRef<any>(null);
   const uberPrintInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const [solicitanteState, setSolicitanteState] = React.useState<{
+    activeType: AccessType | null;
+    residents: any[];
+    selectedIndex: number;
+    confirmed: boolean;
+    manualName: string;
+    isManual: boolean;
+  }>({
+    activeType: null,
+    residents: [],
+    selectedIndex: 0,
+    confirmed: false,
+    manualName: '',
+    isManual: false
+  });
+
+  const [isLoadingResidents, setIsLoadingResidents] = React.useState<boolean>(false);
+
+  React.useEffect(() => {
+    const activeType = casaValues.delivery ? 'delivery' : casaValues.visitor ? 'visitor' : null;
+    if (!activeType) {
+      setSolicitanteState({
+        activeType: null,
+        residents: [],
+        selectedIndex: 0,
+        confirmed: false,
+        manualName: '',
+        isManual: false
+      });
+      return;
+    }
+
+    const value = casaValues[activeType];
+    const cleanVal = value.trim().toUpperCase();
+    if (!cleanVal) {
+      setSolicitanteState({
+        activeType: null,
+        residents: [],
+        selectedIndex: 0,
+        confirmed: false,
+        manualName: '',
+        isManual: false
+      });
+      return;
+    }
+
+    const normalizedInput = cleanVal.replace(/^(CASA|APTO|APARTAMENTO|AP)\s*/, '').trim();
+
+    let isCurrent = true;
+    setIsLoadingResidents(true);
+
+    async function fetchResidents() {
+      let residents: any[] = [];
+      try {
+        const { data: units, error: unitErr } = await supabase
+          .from('unidades')
+          .select('*')
+          .or(`numero.eq.${normalizedInput},numero.ilike.%${normalizedInput}%`);
+
+        if (units && units.length > 0) {
+          const unitIds = units.map(u => u.id);
+          const { data: morad, error: moradErr } = await supabase
+            .from('moradores')
+            .select('*')
+            .in('unidade_id', unitIds);
+
+          if (morad) {
+            const activeMorad = morad.filter(m => m.ativo !== false && m.active !== false);
+            residents = activeMorad.map(m => ({
+              id: m.id,
+              unit: units.find(u => u.id === m.unidade_id)?.numero || normalizedInput,
+              residentName: m.nome || m.name || 'Morador',
+              primaryPhone: m.telefone || m.phone || '',
+              active: true
+            }));
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching units/residents:', err);
+      }
+
+      if (residents.length === 0) {
+        try {
+          const { data: profiles, error: profErr } = await supabase
+            .from('perfis')
+            .select('*')
+            .eq('funcao', 'morador');
+
+          if (profiles) {
+            const matchedProfiles = profiles.filter(p => {
+              if (p.active === false || p.ativo === false) return false;
+              const unitStr = String(p.condominio_id || '').toUpperCase().trim();
+              const unitNorm = unitStr.replace(/^(CASA|APTO|APARTAMENTO|AP)\s*/, '').trim();
+              return unitNorm === normalizedInput || unitStr === cleanVal || unitNorm === cleanVal || unitStr === normalizedInput;
+            });
+
+            residents = matchedProfiles.map(p => ({
+              id: p.id,
+              unit: p.condominio_id || normalizedInput,
+              residentName: p.nome || p.name || 'Morador',
+              primaryPhone: p.telefone || p.phone || '',
+              active: true
+            }));
+          }
+        } catch (err) {
+          console.error('Error fetching perfis fallback:', err);
+        }
+      }
+
+      if (!isCurrent) return;
+      setIsLoadingResidents(false);
+
+      if (residents.length === 1) {
+        setSolicitanteState({
+          activeType,
+          residents,
+          selectedIndex: 0,
+          confirmed: true,
+          manualName: '',
+          isManual: false
+        });
+      } else if (residents.length > 1) {
+        setSolicitanteState({
+          activeType,
+          residents,
+          selectedIndex: 0,
+          confirmed: false,
+          manualName: '',
+          isManual: false
+        });
+      } else {
+        setSolicitanteState({
+          activeType,
+          residents: [],
+          selectedIndex: 0,
+          confirmed: true,
+          manualName: 'Morador',
+          isManual: false
+        });
+      }
+    }
+
+    const handler = setTimeout(() => {
+      fetchResidents();
+    }, 250);
+
+    return () => {
+      isCurrent = false;
+      clearTimeout(handler);
+    };
+  }, [casaValues.delivery, casaValues.visitor]);
+
+  const selecionarMorador = (type: AccessType, res: any, shouldFocus = true) => {
+    console.log('[Diagnostic] selecionarMorador chamado no QuickActions:', type, res);
+    if (!res) return;
+    const index = solicitanteState.residents.findIndex(r => r.id === res.id);
+    const selIdx = index !== -1 ? index : 0;
+    setSolicitanteState(prev => ({
+      ...prev,
+      activeType: type,
+      selectedIndex: selIdx,
+      confirmed: true,
+      isManual: false
+    }));
+    if (shouldFocus) {
+      advanceQuickFocus(type);
+    }
+  };
+
+  const handleUnitChange = (type: AccessType, value: string) => {
+    setCasaValues(prev => ({ ...prev, [type]: value }));
+  };
+
+  const handleUnitKeyDown = (e: React.KeyboardEvent, type: AccessType) => {
+    if (e.key === 'F2') {
+      e.preventDefault();
+      setSolicitanteState(prev => ({
+        ...prev,
+        activeType: type,
+        isManual: true,
+        confirmed: false,
+        manualName: ''
+      }));
+      return;
+    }
+
+    const { residents, selectedIndex, confirmed, isManual } = solicitanteState;
+
+    if (isManual && !confirmed) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        setSolicitanteState(prev => ({ ...prev, confirmed: true }));
+        advanceQuickFocus(type);
+      }
+      return;
+    }
+
+    if (residents.length > 1 && !confirmed) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSolicitanteState(prev => ({
+          ...prev,
+          selectedIndex: (prev.selectedIndex + 1) % prev.residents.length
+        }));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSolicitanteState(prev => ({
+          ...prev,
+          selectedIndex: (prev.selectedIndex - 1 + prev.residents.length) % prev.residents.length
+        }));
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const selRes = residents[selectedIndex];
+        if (selRes) {
+          selecionarMorador(type, selRes);
+        }
+        return;
+      }
+    }
+
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      advanceQuickFocus(type);
+    }
+  };
+
+  const advanceQuickFocus = (type: AccessType) => {
+    if (type === 'delivery') {
+      deliveryQtyRef.current?.focus();
+      deliveryQtyRef.current?.select();
+    } else if (type === 'visitor') {
+      visitorQtyRef.current?.focus();
+      visitorQtyRef.current?.select();
+    } else {
+      const inputEl = document.querySelector(`[data-quick-input="${type}"]`) as HTMLElement;
+      handleImmediateRelease(type, casaValues[type], inputEl || document.body);
+    }
+  };
 
   React.useEffect(() => {
     return () => {
@@ -186,14 +432,43 @@ export function QuickActions({
         : 1;
     const finalQty = parsedQty < 1 ? 1 : parsedQty;
 
+    let solName: string | undefined = undefined;
+    let solId: string | undefined = undefined;
+
+    if (solicitanteState.activeType === type && solicitanteState.confirmed) {
+      if (solicitanteState.isManual) {
+        solName = solicitanteState.manualName || 'Morador';
+      } else if (solicitanteState.residents.length > 0) {
+        const selRes = solicitanteState.residents[solicitanteState.selectedIndex];
+        if (selRes) {
+          solName = selRes.residentName;
+          solId = selRes.id;
+        }
+      }
+    } else {
+      const fallback = (unitPhones || []).filter((p: any) => p.unit.toUpperCase() === unit.toUpperCase() && p.active !== false);
+      if (fallback.length > 0) {
+        solName = fallback[0].residentName;
+        solId = fallback[0].id;
+      }
+    }
+
     if (onImmediateRelease) {
-      onImmediateRelease(type, unit, finalQty, type === 'delivery' ? avisarMorador : undefined);
+      onImmediateRelease(type, unit, finalQty, type === 'delivery' ? avisarMorador : undefined, solName, solId);
       setCasaValues(prev => ({
         ...prev,
         [type]: ''
       }));
       setDeliveryQty('');
       setVisitorQty('');
+      setSolicitanteState({
+        activeType: null,
+        residents: [],
+        selectedIndex: 0,
+        confirmed: false,
+        manualName: '',
+        isManual: false
+      });
       if (type === 'delivery') setAvisarMorador(false);
       return;
     }
@@ -415,6 +690,53 @@ export function QuickActions({
                   onClick={(e) => e.stopPropagation()}
                   onMouseDown={(e) => e.stopPropagation()}
                 >
+                  {/* OVERLAY FOR RESIDENTS SELECTOR */}
+                  {solicitanteState.activeType === 'delivery' && solicitanteState.residents.length > 1 && !solicitanteState.confirmed && (
+                    <div className="absolute right-0 bottom-8 z-50 bg-slate-900 border border-slate-700 rounded-lg p-1.5 shadow-2xl flex flex-col gap-1 w-44 text-left">
+                      <div className="text-[8px] font-black uppercase text-slate-400 px-1">Selecione o Morador:</div>
+                      {solicitanteState.residents.map((r, idx) => (
+                        <div
+                          key={r.id}
+                          className={cn(
+                            "px-2 py-1 rounded text-[10px] font-black cursor-pointer flex justify-between items-center",
+                            idx === solicitanteState.selectedIndex ? "bg-amber-400 text-slate-900" : "text-white hover:bg-slate-800"
+                          )}
+                          onClick={() => selecionarMorador('delivery', r)}
+                        >
+                          <span>{r.residentName}</span>
+                          {idx === solicitanteState.selectedIndex && <span className="text-[8px]">⏎</span>}
+                        </div>
+                      ))}
+                      <div
+                        onClick={() => setSolicitanteState(prev => ({ ...prev, isManual: true }))}
+                        className="text-[8px] text-amber-400 font-bold px-1 pt-1 border-t border-slate-800 hover:text-amber-300 cursor-pointer"
+                      >
+                        F2: Informar Manualmente
+                      </div>
+                    </div>
+                  )}
+
+                  {solicitanteState.activeType === 'delivery' && solicitanteState.isManual && !solicitanteState.confirmed && (
+                    <div className="absolute right-0 bottom-8 z-50 bg-slate-900 border border-slate-700 rounded-lg p-2 shadow-2xl flex flex-col gap-1 w-44 text-left">
+                      <div className="text-[8px] font-black uppercase text-slate-400">Nome do Solicitante (Manual):</div>
+                      <input
+                        autoFocus
+                        type="text"
+                        className="w-full h-[24px] bg-slate-800 text-white text-[10px] px-1.5 rounded border border-slate-600 focus:outline-none focus:border-amber-400 font-bold"
+                        value={solicitanteState.manualName}
+                        onChange={(e) => setSolicitanteState(prev => ({ ...prev, manualName: e.target.value }))}
+                        onKeyDown={(e) => {
+                          e.stopPropagation();
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            setSolicitanteState(prev => ({ ...prev, confirmed: true }));
+                            advanceQuickFocus('delivery');
+                          }
+                        }}
+                      />
+                    </div>
+                  )}
+
                   <span className="text-[8px] font-black uppercase tracking-wider text-white/80 shrink-0">Casa</span>
                   <input
                     type="text"
@@ -423,26 +745,11 @@ export function QuickActions({
                     value={currentCasaValue}
                     onChange={(e) => {
                       e.stopPropagation();
-                      setCasaValues({
-                        ...casaValues,
-                        delivery: e.target.value
-                      });
+                      handleUnitChange('delivery', e.target.value);
                     }}
                     onKeyDown={(e) => {
                       e.stopPropagation();
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        deliveryQtyRef.current?.focus();
-                        deliveryQtyRef.current?.select();
-                      } else if (e.key === 'ArrowLeft' || e.key === 'Left') {
-                        const val = currentCasaValue.trim();
-                        if (val) {
-                          e.preventDefault();
-                          setAvisarMorador(true);
-                          deliveryQtyRef.current?.focus();
-                          deliveryQtyRef.current?.select();
-                        }
-                      }
+                      handleUnitKeyDown(e, 'delivery');
                     }}
                   />
                   <span className="text-[8px] font-black uppercase tracking-wider text-white/80 shrink-0">Qtd</span>
@@ -492,6 +799,53 @@ export function QuickActions({
                 onClick={(e) => e.stopPropagation()}
                 onMouseDown={(e) => e.stopPropagation()}
               >
+                {/* OVERLAY FOR RESIDENTS SELECTOR */}
+                {solicitanteState.activeType === 'visitor' && solicitanteState.residents.length > 1 && !solicitanteState.confirmed && (
+                  <div className="absolute right-0 bottom-8 z-50 bg-slate-900 border border-slate-700 rounded-lg p-1.5 shadow-2xl flex flex-col gap-1 w-44 text-left">
+                    <div className="text-[8px] font-black uppercase text-slate-400 px-1">Selecione o Morador:</div>
+                    {solicitanteState.residents.map((r, idx) => (
+                      <div
+                        key={r.id}
+                        className={cn(
+                          "px-2 py-1 rounded text-[10px] font-black cursor-pointer flex justify-between items-center",
+                          idx === solicitanteState.selectedIndex ? "bg-amber-400 text-slate-900" : "text-white hover:bg-slate-800"
+                        )}
+                        onClick={() => selecionarMorador('visitor', r)}
+                      >
+                        <span>{r.residentName}</span>
+                        {idx === solicitanteState.selectedIndex && <span className="text-[8px]">⏎</span>}
+                      </div>
+                    ))}
+                    <div
+                      onClick={() => setSolicitanteState(prev => ({ ...prev, isManual: true }))}
+                      className="text-[8px] text-amber-400 font-bold px-1 pt-1 border-t border-slate-800 hover:text-amber-300 cursor-pointer"
+                    >
+                      F2: Informar Manualmente
+                    </div>
+                  </div>
+                )}
+
+                {solicitanteState.activeType === 'visitor' && solicitanteState.isManual && !solicitanteState.confirmed && (
+                  <div className="absolute right-0 bottom-8 z-50 bg-slate-900 border border-slate-700 rounded-lg p-2 shadow-2xl flex flex-col gap-1 w-44 text-left">
+                    <div className="text-[8px] font-black uppercase text-slate-400">Nome do Solicitante (Manual):</div>
+                    <input
+                      autoFocus
+                      type="text"
+                      className="w-full h-[24px] bg-slate-800 text-white text-[10px] px-1.5 rounded border border-slate-600 focus:outline-none focus:border-amber-400 font-bold"
+                      value={solicitanteState.manualName}
+                      onChange={(e) => setSolicitanteState(prev => ({ ...prev, manualName: e.target.value }))}
+                      onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          setSolicitanteState(prev => ({ ...prev, confirmed: true }));
+                          advanceQuickFocus('visitor');
+                        }
+                      }}
+                    />
+                  </div>
+                )}
+
                 <span className="text-[8px] font-black uppercase tracking-wider text-white/80 shrink-0">Casa</span>
                 <input
                   type="text"
@@ -503,18 +857,11 @@ export function QuickActions({
                   value={currentCasaValue}
                   onChange={(e) => {
                     e.stopPropagation();
-                    setCasaValues({
-                      ...casaValues,
-                      visitor: e.target.value
-                    });
+                    handleUnitChange('visitor', e.target.value);
                   }}
                   onKeyDown={(e) => {
                     e.stopPropagation();
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      visitorQtyRef.current?.focus();
-                      visitorQtyRef.current?.select();
-                    }
+                    handleUnitKeyDown(e, 'visitor');
                   }}
                 />
                 <span className="text-[8px] font-black uppercase tracking-wider text-white/80 shrink-0">Qtd</span>

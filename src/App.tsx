@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Header } from './components/Header';
 import { QuickActions } from './components/QuickActions';
 import { AccessForm } from './components/AccessForm';
@@ -22,6 +22,8 @@ import { replaceMessageVariables } from './lib/messageUtils';
 import { AnimatePresence, motion } from 'motion/react';
 import { cn } from './lib/utils';
 import { PrismaModal } from './components/PrismaModal';
+import { supabase, tempSupabase, getProfileTableColumns, buildProfilePayload } from './lib/supabase';
+
 
 export default function App() {
   const [activeToasts, setActiveToasts] = useState<ToastMessage[]>([]);
@@ -590,60 +592,15 @@ export default function App() {
         loaded = JSON.parse(saved);
       } catch (e) {}
     }
-    if (!loaded || loaded.length === 0) {
-      loaded = [
-        { id: '1', name: 'João Silva', pin: '1111', role: 'Porteiro Líder', active: true, condoName: 'BELLE VILLE', notes: 'Turno Diurno' },
-        { id: '2', name: 'Marcos Oliveira', pin: '2015', role: 'Porteiro de Plantão', active: true, condoName: 'BELLE VILLE', notes: 'Turno da Tarde' },
-        { id: '3', name: 'Ana Souza', pin: '1830', role: 'Porteira Noturna', active: true, condoName: 'BELLE VILLE', notes: 'Turno da Noite' },
-        { id: '4', name: 'Alexandre Rodrigues', pin: '9999', role: 'Supervisor Geral', active: true, condoName: 'BELLE VILLE', notes: 'Outro condomínio' },
-        { id: '5', name: 'Ricardo Santos', pin: '1234', role: 'Síndico Gestor', active: true, condoName: 'BELLE VILLE', notes: 'Acesso Administrativo' }
-      ];
-    } else {
-      // Automatic migration: check if there is an explicit Síndico/Admin in the loaded porteiros list
-      const hasSindico = loaded.some(p => p.active && (p.role.toLowerCase().includes('sindico') || p.role.toLowerCase().includes('síndico')));
-      if (!hasSindico) {
-        // Resolve PIN conflict if João Silva still has 1234
-        loaded = loaded.map(p => {
-          if (p.id === '1' && p.pin === '1234' && p.role === 'Porteiro Líder') {
-            return { ...p, pin: '1111' };
-          }
-          return p;
-        });
-        
-        // Remove any existing duplicate user with id '5' before pushing the new Síndico Gestor
-        loaded = loaded.filter(p => p.id !== '5');
-
-        // Add a clean, explicit Síndico Gestor
-        loaded.push({
-          id: '5',
-          name: 'Ricardo Santos',
-          pin: '1234',
-          role: 'Síndico Gestor',
-          active: true,
-          condoName: 'BELLE VILLE',
-          notes: 'Acesso Administrativo'
-        });
-      }
-    }
-    
-    // Always force all loaded porteiros to be linked to BELLE VILLE and persist this
-    const migrated = loaded.map(p => ({
-      ...p,
-      condoName: 'BELLE VILLE'
-    }));
-
-    // Ensure strict uniqueness of IDs to prevent duplicate keys in lists
-    const uniqueMap = new Map<string, Porteiro>();
-    migrated.forEach(p => {
-      uniqueMap.set(p.id, p);
+    // Filter out dummy/fictional users
+    const dummyIds = ['1', '2', '3', '4', '5'];
+    const dummyNames = ['joão silva', 'marcos oliveira', 'ana souza', 'alexandre rodrigues', 'ricardo santos', 'administrador master'];
+    loaded = loaded.filter(p => {
+      if (p.id && dummyIds.includes(p.id)) return false;
+      if (p.name && dummyNames.includes(p.name.toLowerCase())) return false;
+      return true;
     });
-    const migratedUnique = Array.from(uniqueMap.values());
-
-    try {
-      localStorage.setItem('portaria_porteiros', JSON.stringify(migratedUnique));
-    } catch (e) {}
-
-    return migratedUnique;
+    return loaded;
   });
 
   const [loggedPorterId, setLoggedPorterId] = useState<string | null>(() => {
@@ -690,6 +647,130 @@ export default function App() {
   }, [porteiros]);
 
   const setAdminUsers = () => {};
+
+  const loadPorteirosFromSupabase = useCallback(async () => {
+    try {
+      const { data: profiles, error } = await supabase
+        .from('perfis')
+        .select('*');
+
+      if (error) {
+        console.error('Erro ao buscar perfis do Supabase:', error.message);
+        const cached = localStorage.getItem('portaria_porteiros');
+        if (cached) {
+          try {
+            setPorteiros(JSON.parse(cached));
+          } catch (e) {}
+        }
+        return;
+      }
+
+      if (profiles) {
+        console.log('Perfis reais carregados do Supabase:', profiles);
+        const filteredProfiles = profiles.filter((p: any) => (p.funcao || '').toLowerCase() !== 'morador');
+        const mapped: Porteiro[] = filteredProfiles.map((p: any) => {
+          let displayedRole = 'Porteiro';
+          const f = (p.funcao || p.role || '').toLowerCase();
+          if (f.includes('admin') || f.includes('supervisor') || f.includes('geral')) {
+            displayedRole = 'Administrador';
+          } else if (f.includes('sindico') || f.includes('síndico')) {
+            displayedRole = 'Síndico';
+          }
+
+          const rawNotes = p.observacoes || p.notes || '';
+          let extractedPin = p.pin || p.password || p.senha || '';
+          
+          // Fallback parsing from [PWD:...]
+          const pwdMatch = rawNotes.match(/\[PWD:(.*?)\]/);
+          if (pwdMatch) {
+            extractedPin = pwdMatch[1];
+          }
+
+          // Clean notes by removing the [PWD:...] tag if present
+          const cleanNotes = rawNotes.replace(/\[PWD:(.*?)\]/, '').trim();
+
+          return {
+            id: p.id,
+            name: p.nome || p.name || 'Usuário',
+            pin: extractedPin, // password/credential
+            role: displayedRole,
+            active: p.active !== false,
+            condoName: p.condominio || p.condo || p.condoName || condoInfo.name,
+            email: p.email || '',
+            notes: cleanNotes
+          };
+        });
+
+        // Filter out dummy ones just in case
+        const dummyIds = ['1', '2', '3', '4', '5'];
+        const dummyNames = ['joão silva', 'marcos oliveira', 'ana souza', 'alexandre rodrigues', 'ricardo santos', 'administrador master'];
+        const cleaned = mapped.filter(p => {
+          if (p.id && dummyIds.includes(p.id)) return false;
+          if (p.name && dummyNames.includes(p.name.toLowerCase())) return false;
+          return true;
+        });
+
+        // Make sure current loggedPorter is preserved if not in list
+        const loggedId = localStorage.getItem('portaria_logged_porter_id');
+        if (loggedId) {
+          const hasLogged = cleaned.some(p => p.id === loggedId);
+          if (!hasLogged && loggedPorter) {
+            cleaned.push(loggedPorter);
+          }
+        }
+
+        setPorteiros(cleaned);
+        localStorage.setItem('portaria_porteiros', JSON.stringify(cleaned));
+      }
+    } catch (err) {
+      console.error('Erro de conexão ao carregar perfis:', err);
+      const cached = localStorage.getItem('portaria_porteiros');
+      if (cached) {
+        try {
+          setPorteiros(JSON.parse(cached));
+        } catch (e) {}
+      }
+    }
+  }, [condoInfo.name, loggedPorter]);
+
+  const loadMoradoresFromSupabase = useCallback(async () => {
+    try {
+      const { data: profiles, error } = await supabase
+        .from('perfis')
+        .select('*')
+        .eq('funcao', 'morador');
+
+      if (error) {
+        console.error('Erro ao buscar moradores do Supabase:', error.message);
+        return;
+      }
+
+      if (profiles) {
+        console.log('Moradores reais carregados do Supabase:', profiles);
+        const mapped: UnitPhone[] = profiles.map((p: any) => ({
+          id: p.id,
+          unit: p.condominio_id || 'Não informado',
+          residentName: p.nome || 'Morador',
+          primaryPhone: p.telefone || '',
+          active: p.active !== false,
+          createdAt: p.created_at ? new Date(p.created_at) : new Date(),
+          updatedAt: p.created_at ? new Date(p.created_at) : new Date(),
+        }));
+        
+        if (mapped.length > 0) {
+          setUnitPhones(mapped);
+          localStorage.setItem('portaria_unit_phones', JSON.stringify(mapped));
+        }
+      }
+    } catch (err) {
+      console.error('Erro de conexão ao carregar moradores:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPorteirosFromSupabase();
+    loadMoradoresFromSupabase();
+  }, [loadPorteirosFromSupabase, loadMoradoresFromSupabase]);
 
   const [systemSettings, setSystemSettings] = useState<SystemSettings>(() => {
     const saved = localStorage.getItem('portaria_system_settings');
@@ -1059,6 +1140,53 @@ export default function App() {
   const setUserRole = (role: UserRole) => {
     console.log('setUserRole derived noop:', role);
   };
+
+  // Synchronize view state with window location path to meet routing requirements
+  useEffect(() => {
+    const currentPath = window.location.pathname;
+    
+    // Sync pathname to view on mount/first load if user is logged in
+    if (loggedPorter) {
+      if (currentPath === '/admin' && userRole === 'admin') {
+        setView('admin');
+      } else if (currentPath === '/sindico' && userRole === 'sindico') {
+        setView('admin'); // 'admin' is the view name in the app for the Admin/Sindico panel
+      } else if (currentPath === '/portaria') {
+        setView('portaria');
+      }
+    }
+  }, [loggedPorter, userRole]);
+
+  // Sync view to pathname on view change
+  useEffect(() => {
+    if (!loggedPorter) {
+      if (window.location.pathname !== '/') {
+        window.history.pushState({}, '', '/');
+      }
+      return;
+    }
+
+    let targetPath = '/portaria';
+    if (view === 'admin') {
+      if (userRole === 'admin') {
+        targetPath = '/admin';
+      } else if (userRole === 'sindico') {
+        targetPath = '/sindico';
+      }
+    } else if (view === 'portaria') {
+      targetPath = '/portaria';
+    } else if (view === 'frequentes') {
+      targetPath = '/frequentes';
+    } else if (view === 'preauth') {
+      targetPath = '/preauth';
+    } else if (view === 'controle') {
+      targetPath = '/controle';
+    }
+
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({}, '', targetPath);
+    }
+  }, [view, userRole, loggedPorter]);
   const [tempRole, setTempRole] = useState<'sindico' | 'admin'>('admin');
   const [pinValue, setPinValue] = useState<string>('');
   const [deviceStatus, setDeviceStatus] = useState<string>(() => {
@@ -1360,7 +1488,7 @@ export default function App() {
     }, 100);
   };
 
-  const handleImmediateRelease = (type: AccessType, unit: string, qty: number = 1, avisarMorador?: boolean) => {
+  const handleImmediateRelease = (type: AccessType, unit: string, qty: number = 1, avisarMorador?: boolean, residentName?: string, residentId?: string) => {
     const defaultVisitorName = type === 'uber' ? 'Motorista Uber' :
                                type === 'delivery' ? 'Entregador' :
                                type === 'service' ? 'Prestador' : 'Visitante';
@@ -1370,14 +1498,17 @@ export default function App() {
                                  type === 'service' ? 'PRESTADOR DE SERVIÇOS' : 'VISITANTE';
 
     const pendingId = crypto.randomUUID();
-    const resident = getPrimaryResident(unit);
-    const residentName = resident ? resident.residentName : 'Morador';
+    let finalResidentName = residentName;
+    if (!finalResidentName) {
+      const resident = getPrimaryResident(unit);
+      finalResidentName = resident ? resident.residentName : 'Morador';
+    }
 
     const newPending = {
       id: pendingId,
       unit: unit,
       type: type,
-      residentName: residentName,
+      residentName: finalResidentName,
       visitorName: defaultVisitorName,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -1391,7 +1522,9 @@ export default function App() {
         type: type,
         origin: 'quick_action',
         deliveriesCount: (type === 'delivery' || type === 'visitor') ? qty : undefined,
-        avisarMorador: type === 'delivery' ? avisarMorador : undefined
+        avisarMorador: type === 'delivery' ? avisarMorador : undefined,
+        morador_solicitante_nome: finalResidentName,
+        morador_solicitante_id: residentId
       }
     };
 
@@ -1528,7 +1661,9 @@ export default function App() {
         id: pendingId,
         unit: data.destination || '',
         type: formType,
-        residentName: getPrimaryResident(data.destination || '')?.residentName || 'Morador',
+        residentName: data.morador_solicitante_nome || getPrimaryResident(data.destination || '')?.residentName || 'Morador',
+        morador_solicitante_id: data.morador_solicitante_id,
+        morador_solicitante_nome: data.morador_solicitante_nome,
         visitorName: data.name || (formType === 'uber' ? 'Motorista Uber' : formType === 'delivery' ? 'Entregador' : 'Visitante'),
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -1651,6 +1786,8 @@ export default function App() {
       prismaId: (data as any).prismaId,
       prismaNumber: (data as any).prismaNumber,
       prismaColor: (data as any).prismaColor,
+      morador_solicitante_id: data.morador_solicitante_id || (pendingRequest as any)?.morador_solicitante_id,
+      morador_solicitante_nome: data.morador_solicitante_nome || (pendingRequest as any)?.morador_solicitante_nome,
     };
 
     setRecords([newRecord, ...records]);
@@ -2342,62 +2479,439 @@ export default function App() {
     setOperationalLogs((prev: any) => [newLogVal, ...prev]);
   };
 
-  const handlePorterLoginByPin = (pin: string): boolean => {
-    const match = porteiros.find(p => p.pin === pin);
-    if (!match) {
-      toast.error('PIN INCORRETO', {
-        description: 'Nenhum usuário cadastrado encontrado com este PIN.'
-      });
-      return false;
-    }
-    if (!match.active) {
-      toast.error('PORTARIA BLOQUEADA', {
-        description: `O cadastro do usuário ${match.name} está SUSPENSO.`
-      });
-      return false;
-    }
-    // Check if porter is assigned to ANOTHER condominium
-    if (match.condoName && match.condoName.toLowerCase() !== condoInfo.name.toLowerCase()) {
-      toast.error('ACESSO NEGADO', {
-        description: `Este PIN pertence ao condomínio "${match.condoName}". Acesso não autorizado para "${condoInfo.name}".`
+  const handlePorterLoginByPin = async (email: string, pin: string): Promise<boolean> => {
+    const trimmedEmail = email.trim().toLowerCase();
+    const trimmedPin = pin.trim();
+
+    if (!trimmedEmail || !trimmedPin) {
+      toast.error('PREENCHA TODOS OS CAMPOS', {
+        description: 'Por favor, insira e-mail e senha de acesso.'
       });
       return false;
     }
 
-    // Successfully matched!
-    localStorage.setItem('portaria_logged_porter_id', match.id);
-    setLoggedPorterId(match.id);
-    
-    // Register entry log:
-    const now = new Date();
-    const formattedTime = format(now, 'HH:mm:ss');
-    const newLogVal = {
-      id: crypto.randomUUID(),
-      timestamp: formattedTime,
-      action: `INÍCIO DE PLANTÃO: Porteiro ${match.name} (${match.role}) iniciou o plantão no condomínio ${condoInfo.name}.`,
-      operator: match.name
-    };
-    setOperationalLogs((prev: any) => [newLogVal, ...prev]);
+    try {
+      // 1. Authenticate using Supabase Auth signInWithPassword
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: trimmedEmail,
+        password: trimmedPin
+      });
 
-    toast.success('PLANTÃO INICIADO', {
-      description: `Bem-vindo, ${match.name}! Boa jornada de trabalho.`,
-      icon: <Check className="w-4 h-4 text-emerald-500" />
-    });
-    return true;
+      if (error) {
+        console.error('Erro de autenticação no Supabase Auth:', error);
+        
+        // Try fallback to local porteiros list loaded from Supabase "perfis" table
+        const localMatch = porteiros.find(
+          p => p.email && p.email.toLowerCase() === trimmedEmail && p.pin === trimmedPin
+        );
+
+        if (localMatch) {
+          console.log('Login bem-sucedido via fallback local:', localMatch);
+          
+          if (!localMatch.active) {
+            toast.error('ACESSO NEGADO', {
+              description: `O cadastro do usuário ${localMatch.name} está SUSPENSO.`
+            });
+            return false;
+          }
+
+          const loggedUser: Porteiro = {
+            id: localMatch.id,
+            name: localMatch.name,
+            pin: trimmedPin,
+            role: localMatch.role,
+            active: localMatch.active,
+            condoName: localMatch.condoName || condoInfo.name,
+            email: localMatch.email,
+            notes: localMatch.notes
+          };
+
+          // Update state and keep in our local porteiros list
+          setPorteiros(prevPorteiros => {
+            const list = prevPorteiros || [];
+            const exists = list.some(p => p.id === loggedUser.id);
+            const newList = exists 
+              ? list.map(p => p.id === loggedUser.id ? { ...p, ...loggedUser } : p)
+              : [...list, loggedUser];
+            
+            try {
+              localStorage.setItem('portaria_porteiros', JSON.stringify(newList));
+            } catch (e) {}
+            return newList;
+          });
+
+          localStorage.setItem('portaria_logged_porter_id', loggedUser.id);
+          setLoggedPorterId(loggedUser.id);
+
+          const now = new Date();
+          const formattedTime = format(now, 'HH:mm:ss');
+          const newLogVal = {
+            id: crypto.randomUUID(),
+            timestamp: formattedTime,
+            action: `INÍCIO DE PLANTÃO: Usuário ${loggedUser.name} (${loggedUser.role}) iniciou o plantão no condomínio ${condoInfo.name} via login fallback local.`,
+            operator: loggedUser.name
+          };
+          setOperationalLogs((prev: any) => [newLogVal, ...prev]);
+
+          const normalizedRole = loggedUser.role.toLowerCase();
+          if (normalizedRole.includes('admin') || normalizedRole.includes('supervisor') || normalizedRole.includes('geral') || normalizedRole.includes('sindico') || normalizedRole.includes('síndico')) {
+            setView('admin');
+          } else {
+            setView('portaria');
+          }
+
+          toast.success('PLANTÃO INICIADO', {
+            description: `Bem-vindo, ${loggedUser.name}! Boa jornada de trabalho.`,
+            icon: <Check className="w-4 h-4 text-emerald-500" />
+          });
+          return true;
+        }
+
+        toast.error('FALHA NA AUTENTICAÇÃO', {
+          description: error.message || 'E-mail ou senha inválidos.'
+        });
+        return false;
+      }
+
+      if (!data.user) {
+        toast.error('FALHA NA AUTENTICAÇÃO', {
+          description: 'Não foi possível recuperar os dados do usuário autenticado.'
+        });
+        return false;
+      }
+
+      console.log('Usuário autenticado com sucesso:', data.user);
+
+      // 2. Fetch corresponding profile from "perfis" table by the same id
+      let profile: any = null;
+      try {
+        const { data: perfilData, error: perfilError } = await supabase
+          .from('perfis')
+          .select('*')
+          .eq('id', data.user.id)
+          .single();
+
+        if (perfilError) {
+          console.warn(`[DIAGNÓSTICO] Perfil não encontrado para o ID "${data.user.id}" na tabela "perfis". Erro:`, perfilError.message);
+          console.log('Mantendo o usuário autenticado para diagnóstico conforme diretrizes.');
+        } else {
+          profile = perfilData;
+          console.log('Perfil encontrado com sucesso na tabela perfis:', profile);
+        }
+      } catch (perfilCatchErr) {
+        console.error('[DIAGNÓSTICO] Falha ao tentar consultar a tabela "perfis":', perfilCatchErr);
+        console.log('Mantendo o usuário autenticado para diagnóstico conforme diretrizes.');
+      }
+
+      const userEmail = data.user.email || trimmedEmail;
+
+      // Update the record of arbigaus34@gmail.com in "perfis" table so that "funcao = 'admin'"
+      if (userEmail === 'arbigaus34@gmail.com') {
+        try {
+          const { error: updateError } = await supabase
+            .from('perfis')
+            .update({ funcao: 'admin' })
+            .eq('id', data.user.id);
+
+          if (updateError) {
+            console.error('Erro ao atualizar funcao do admin na tabela perfis:', updateError.message);
+          } else {
+            console.log('Funcao atualizada com sucesso para admin na tabela perfis.');
+            if (profile) {
+              profile.funcao = 'admin';
+            } else {
+              profile = { id: data.user.id, funcao: 'admin', nome: 'Administrador Real', email: userEmail };
+            }
+          }
+        } catch (updateCatchErr) {
+          console.error('Falha ao tentar atualizar a tabela perfis para admin:', updateCatchErr);
+        }
+
+        // Always guarantee local object has admin role
+        if (profile) {
+          profile.funcao = 'admin';
+        } else {
+          profile = { id: data.user.id, funcao: 'admin', nome: 'Administrador Real', email: userEmail };
+        }
+      }
+
+      // 3. Define the logged user object
+      // Determine user role based on the profile
+      let finalRole = 'Porteiro';
+      if (profile) {
+        const f = (profile.funcao || profile.role || 'porteiro').toLowerCase();
+        if (f.includes('admin') || f.includes('supervisor') || f.includes('geral')) {
+          finalRole = 'Administrador';
+        } else if (f.includes('sindico') || f.includes('síndico')) {
+          finalRole = 'Síndico';
+        } else {
+          finalRole = 'Porteiro';
+        }
+      } else if (userEmail === 'arbigaus34@gmail.com') {
+        finalRole = 'Administrador';
+      }
+
+      const loggedUser: Porteiro = {
+        id: data.user.id,
+        name: profile?.nome || profile?.name || (userEmail === 'arbigaus34@gmail.com' ? 'Administrador Real' : userEmail.split('@')[0]),
+        pin: trimmedPin, // store password/credentials in pin field for reverse compatibility
+        role: finalRole,
+        active: true,
+        condoName: condoInfo.name,
+        email: userEmail,
+        notes: profile?.observacoes || profile?.notes || 'Usuário Autenticado via Supabase Auth'
+      };
+
+      // 4. Update state and keep in our local porteiros list
+      setPorteiros(prevPorteiros => {
+        const list = prevPorteiros || [];
+        const exists = list.some(p => p.id === loggedUser.id);
+        const newList = exists 
+          ? list.map(p => p.id === loggedUser.id ? { ...p, ...loggedUser } : p)
+          : [...list, loggedUser];
+        
+        try {
+          localStorage.setItem('portaria_porteiros', JSON.stringify(newList));
+        } catch (e) {}
+        return newList;
+      });
+
+      // 5. Save session ID to local storage
+      localStorage.setItem('portaria_logged_porter_id', loggedUser.id);
+      setLoggedPorterId(loggedUser.id);
+
+      // 6. Register entry log
+      const now = new Date();
+      const formattedTime = format(now, 'HH:mm:ss');
+      const newLogVal = {
+        id: crypto.randomUUID(),
+        timestamp: formattedTime,
+        action: `INÍCIO DE PLANTÃO: Usuário ${loggedUser.name} (${loggedUser.role}) iniciou o plantão no condomínio ${condoInfo.name} via Supabase Auth.`,
+        operator: loggedUser.name
+      };
+      setOperationalLogs((prev: any) => [newLogVal, ...prev]);
+
+      // 7. If recognized as admin or sindico, redirect to admin view (which handles /admin or /sindico)
+      const normalizedRole = loggedUser.role.toLowerCase();
+      if (normalizedRole.includes('admin') || normalizedRole.includes('supervisor') || normalizedRole.includes('geral') || normalizedRole.includes('sindico') || normalizedRole.includes('síndico')) {
+        setView('admin');
+      } else {
+        setView('portaria');
+      }
+
+      toast.success('PLANTÃO INICIADO', {
+        description: `Bem-vindo, ${loggedUser.name}! Boa jornada de trabalho.`,
+        icon: <Check className="w-4 h-4 text-emerald-500" />
+      });
+      return true;
+    } catch (err: any) {
+      console.error('Erro crítico no processo de login:', err);
+      toast.error('ERRO INTERNO NO LOGIN', {
+        description: err.message || 'Ocorreu um erro ao processar sua solicitação.'
+      });
+      return false;
+    }
+  };
+
+  const handleUpdatePorteiros = async (newPorteirosList: Porteiro[]) => {
+    // Save locally first for instant feedback
+    setPorteiros(newPorteirosList);
+    localStorage.setItem('portaria_porteiros', JSON.stringify(newPorteirosList));
+
+    // Sync changes with Supabase DB
+    try {
+      // 0. Discover cols
+      const cols = await getProfileTableColumns();
+      console.log('handleUpdatePorteiros: Colunas reais detectadas em perfis:', cols);
+
+      // 1. Detect deletes
+      const deleted = porteiros.filter(p => p.id && !newPorteirosList.some(np => np.id === p.id));
+      for (const p of deleted) {
+        if (p.id === 'arbigaus34@gmail.com' || p.email === 'arbigaus34@gmail.com') {
+          console.warn('Proteção de segurança: Não é permitido remover o usuário real arbigaus34@gmail.com');
+          continue;
+        }
+        console.log('Deletando perfil do Supabase:', p.id);
+        const { error } = await supabase
+          .from('perfis')
+          .delete()
+          .eq('id', p.id);
+        if (error) {
+          console.error('Erro ao deletar perfil:', error.message);
+        }
+      }
+
+      // 2. Detect updates & inserts
+      for (const np of newPorteirosList) {
+        const original = porteiros.find(p => p.id === np.id);
+        
+        let funcaoDb = 'porteiro';
+        const roleLower = np.role.toLowerCase();
+        if (roleLower.includes('admin') || roleLower.includes('supervisor') || roleLower.includes('geral')) {
+          funcaoDb = 'admin';
+        } else if (roleLower.includes('sindico') || roleLower.includes('síndico')) {
+          funcaoDb = 'sindico';
+        }
+
+        if (!original) {
+          // Check if this profile ID already exists in the 'perfis' table (already created in PorterManager)
+          const { data: existingProfile } = await supabase
+            .from('perfis')
+            .select('id')
+            .eq('id', np.id)
+            .maybeSingle();
+
+          if (existingProfile) {
+            console.log('Perfil já cadastrado no banco, pulando criação redundante:', np.id);
+            continue;
+          }
+
+          // It's a new user!
+          console.log('Criando novo usuário no Supabase:', np.email);
+          // Register in Supabase Auth first
+          const { data: signUpData, error: signUpError } = await tempSupabase.auth.signUp({
+            email: np.email || '',
+            password: np.pin || '123456' // password as password
+          });
+
+          if (signUpError) {
+            console.error('Erro ao cadastrar usuário no Supabase Auth:', signUpError.message);
+            toast.error('ERRO SUPABASE AUTH', {
+              description: `Não foi possível criar as credenciais: ${signUpError.message}`
+            });
+            continue;
+          }
+
+          if (signUpData.user) {
+            const notesWithPwd = `${np.notes || ''} [PWD:${np.pin}]`.trim();
+            const rawPayload: any = {
+              id: signUpData.user.id,
+              nome: np.name,
+              email: np.email,
+              funcao: funcaoDb,
+              active: np.active !== false,
+              telefone: np.phone || '',
+              phone: np.phone || '',
+              observacoes: notesWithPwd,
+              notes: notesWithPwd,
+              pin: np.pin,
+              password: np.pin
+            };
+
+            const insertPayload = buildProfilePayload(rawPayload, cols);
+
+            let { error: profileError } = await supabase
+              .from('perfis')
+              .insert(insertPayload);
+
+            if (profileError) {
+              console.warn('Erro ao criar perfil completo, tentando simplificado:', profileError.message);
+              const { error: minimalError } = await supabase
+                .from('perfis')
+                .insert({
+                  id: signUpData.user.id,
+                  nome: np.name,
+                  email: np.email,
+                  funcao: funcaoDb,
+                  active: np.active !== false,
+                  observacoes: notesWithPwd,
+                  notes: notesWithPwd
+                });
+              profileError = minimalError;
+            }
+
+            if (profileError) {
+              console.error('Erro crítico ao criar perfil na tabela perfis:', profileError.message);
+            } else {
+              console.log('Perfil criado com sucesso na tabela perfis.');
+            }
+          }
+        } else {
+          // Check if changed
+          const hasChanged = 
+            original.name !== np.name || 
+            original.role !== np.role || 
+            original.active !== np.active || 
+            original.condoName !== np.condoName ||
+            original.email !== np.email ||
+            original.notes !== np.notes ||
+            original.phone !== np.phone;
+
+          if (hasChanged) {
+            if (np.email === 'arbigaus34@gmail.com' && funcaoDb !== 'admin') {
+              console.warn('Proteção de segurança: Não é permitido rebaixar a função de arbigaus34@gmail.com');
+              funcaoDb = 'admin';
+            }
+            console.log('Atualizando perfil no Supabase:', np.id);
+            const notesWithPwd = `${np.notes || ''} [PWD:${np.pin}]`.trim();
+            const rawPayload: any = {
+              id: np.id,
+              nome: np.name,
+              email: np.email,
+              funcao: funcaoDb,
+              active: np.active !== false,
+              telefone: np.phone || '',
+              phone: np.phone || '',
+              observacoes: notesWithPwd,
+              notes: notesWithPwd,
+              pin: np.pin,
+              password: np.pin
+            };
+
+            const updatePayload = buildProfilePayload(rawPayload, cols);
+
+            let { error: profileError } = await supabase
+              .from('perfis')
+              .update(updatePayload)
+              .eq('id', np.id);
+
+            if (profileError) {
+              console.warn('Erro ao atualizar perfil completo, tentando simplificado:', profileError.message);
+              const { error: minimalError } = await supabase
+                .from('perfis')
+                .update({
+                  nome: np.name,
+                  email: np.email,
+                  funcao: funcaoDb,
+                  active: np.active !== false,
+                  observacoes: notesWithPwd,
+                  notes: notesWithPwd
+                })
+                .eq('id', np.id);
+              profileError = minimalError;
+            }
+
+            if (profileError) {
+              console.error('Erro ao atualizar perfil na tabela perfis:', profileError.message);
+            } else {
+              console.log('Perfil updated successfully.');
+            }
+          }
+        }
+      }
+
+      // Reload porteiros to ensure everything is perfectly synchronized
+      await loadPorteirosFromSupabase();
+    } catch (err) {
+      console.error('Erro ao sincronizar porteiros com o Supabase:', err);
+    }
   };
 
   const handleAdminPanelPinSubmit = (enteredPin: string): boolean => {
-    // 1. O PIN digitado deve existir na base de porteiros cadastrados
-    const match = porteiros.find(p => p.pin === enteredPin);
+    // 1. O PIN/Senha digitado deve existir na base ou corresponder ao operador logado
+    let match = porteiros.find(p => p.pin === enteredPin);
+    if (!match && loggedPorter && loggedPorter.pin === enteredPin) {
+      match = loggedPorter;
+    }
     
     if (!match) {
-      toast.error('PIN INCORRETO', {
-        description: 'Nenhum usuário cadastrado encontrado com este PIN.'
+      toast.error('SENHA INCORRETA', {
+        description: 'Nenhum usuário cadastrado encontrado com esta senha.'
       });
       return false;
     }
 
-    // 2. O PIN deve estar vinculado EXPLICITAMENTE a um usuário ativo
+    // 2. O PIN/Senha deve estar vinculado EXPLICITAMENTE a um usuário ativo
     if (!match.active) {
       toast.error('ACESSO NEGADO', {
         description: `O cadastro do usuário ${match.name} está SUSPENSO.`
@@ -2547,10 +3061,63 @@ export default function App() {
     }
   };
 
-  const handleClearUnitPhones = () => {
-    if (confirm('Deseja limpar todos os telefones vinculados?')) {
-      setUnitPhones([]);
-      toast.error('Telefones vinculados apagados.');
+  const handleUpdateUnitPhones = async (newPhones: UnitPhone[]) => {
+    setUnitPhones(newPhones);
+    localStorage.setItem('portaria_unit_phones', JSON.stringify(newPhones));
+
+    try {
+      const currentIds = unitPhones.map(p => p.id);
+      const newIds = newPhones.map(p => p.id);
+      const deletedIds = currentIds.filter(id => !newIds.includes(id));
+
+      for (const id of deletedIds) {
+        await supabase
+          .from('perfis')
+          .delete()
+          .eq('id', id);
+      }
+
+      for (const phone of newPhones) {
+        const existing = unitPhones.find(p => p.id === phone.id);
+        if (!existing || JSON.stringify(existing) !== JSON.stringify(phone)) {
+          const rawPayload = {
+            id: phone.id,
+            nome: phone.residentName,
+            telefone: phone.primaryPhone,
+            funcao: 'morador',
+            active: phone.active !== false,
+            condominio_id: phone.unit,
+          };
+          const { error } = await supabase
+            .from('perfis')
+            .upsert(rawPayload);
+          if (error) {
+            console.error('Erro ao salvar morador no Supabase:', error.message);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao sincronizar moradores no Supabase:', err);
+    }
+  };
+
+  const handleClearUnitPhones = async () => {
+    if (confirm('Deseja limpar todos os moradores cadastrados no banco real?')) {
+      try {
+        const { error } = await supabase
+          .from('perfis')
+          .delete()
+          .eq('funcao', 'morador');
+        if (error) {
+          console.error('Erro ao limpar moradores no Supabase:', error.message);
+        } else {
+          setUnitPhones([]);
+          toast.error('Moradores apagados com sucesso.');
+        }
+      } catch (err) {
+        console.error('Erro de conexão ao limpar moradores:', err);
+        toast.error('Erro ao conectar ao banco.');
+      }
     }
   };
 
@@ -2999,7 +3566,6 @@ export default function App() {
       {loggedPorter === null && (
         <PorterPinLogin
           condoName={condoInfo.name}
-          porteiros={porteiros}
           onLogin={handlePorterLoginByPin}
         />
       )}
@@ -3082,6 +3648,7 @@ export default function App() {
           onToggleMute={() => setIsMuted(prev => !prev)}
           loggedPorterName={loggedPorter?.name}
           loggedPorterRole={loggedPorter?.role}
+          loggedPorterEmail={loggedPorter?.email}
           onLogoutShift={() => setIsLogoutModalOpen(true)}
         />
 
@@ -3348,6 +3915,7 @@ export default function App() {
                           onUberPrintAttachedChange={setUberPrintAttached}
                           onImmediateUberRelease={handleImmediateUberRelease}
                           onQueueUberPrintAction={handleQueueUberPrintAction}
+                          unitPhones={unitPhones}
                         />
                       </motion.div>
                     )}
@@ -3995,15 +4563,15 @@ export default function App() {
                                         <Wrench className="w-3.5 h-3.5" />}
                                     </div>
                                     {item.type === 'delivery' || item.type === 'visitor' || item.type === 'uber' ? (
-                                      <div className="min-w-0 flex-1 text-left flex flex-col leading-tight">
+                                      <div className="min-w-0 flex-1 text-left flex flex-col leading-tight animate-in fade-in duration-200">
                                         <div className="flex items-center gap-1.5">
                                           <span className="text-sm font-black text-slate-900 uppercase">CASA {item.unit}</span>
                                           {(item.status === 'authorized' && (unitActivityThisWeek.get(item.unit) || 0) >= 3) && (
                                               <span className="text-[10px] animate-pulse shrink-0" title="Casa com liberações frequentes">👍</span>
                                           )}
                                         </div>
-                                        <span className="text-[10px] font-black text-slate-400 uppercase truncate max-w-[160px]">
-                                          {titleName}
+                                        <span className="text-[10px] font-black text-slate-400 uppercase truncate max-w-[200px]">
+                                          Solicitado por: <span className="font-extrabold text-blue-600">{item.morador_solicitante_nome || item.residentName || 'Morador'}</span>
                                         </span>
                                       </div>
                                     ) : (
@@ -4805,12 +5373,12 @@ export default function App() {
             messageTemplates={messageTemplates}
             permanentProfiles={permanentProfiles}
             porteiros={porteiros}
-            onUpdatePorteiros={setPorteiros}
+            onUpdatePorteiros={handleUpdatePorteiros}
             loggedPorterName={loggedPorter?.name}
             onRegisterOperationalLog={handleRegisterOperationalLog}
             onUpdateFrequents={setFrequentVisitors}
             onUpdatePreAuths={setPreAuths}
-            onUpdateUnitPhones={setUnitPhones}
+            onUpdateUnitPhones={handleUpdateUnitPhones}
             onUpdateUnitRules={setUnitRules}
             onUpdateCondoInfo={setCondoInfo}
             onUpdateAdminUsers={setAdminUsers}
@@ -4844,237 +5412,44 @@ export default function App() {
                   </div>
                   <h3 className="text-lg font-black text-slate-900 uppercase tracking-wider">Acesso ao Painel</h3>
                   <p className="text-[10px] font-bold text-slate-400 uppercase leading-relaxed max-w-xs mx-auto text-center">
-                    Utilize o seletor abaixo para alternar de perfil, insira o PIN correspondente nas teclas e acesse instantaneamente.
+                    Área restrita. Digite a senha de acesso de um Administrador ou Síndico para prosseguir.
                   </p>
                 </div>
 
-                {/* Role Switcher tabs */}
-                <div className="bg-slate-50 p-1 rounded-2xl border border-slate-200 flex gap-1 shadow-inner">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTempRole('sindico');
-                      setPinValue('');
-                    }}
-                    className={cn(
-                      "flex-1 py-2.5 text-[10px] font-bold uppercase tracking-wider rounded-xl transition-all",
-                      tempRole === 'sindico' 
-                        ? "bg-white text-blue-600 shadow-sm border border-slate-200/50" 
-                        : "text-slate-400 hover:text-slate-600"
-                    )}
-                  >
-                    Perfil Síndico
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTempRole('admin');
-                      setPinValue('');
-                    }}
-                    className={cn(
-                      "flex-1 py-2.5 text-[10px] font-bold uppercase tracking-wider rounded-xl transition-all",
-                      tempRole === 'admin' 
-                        ? "bg-white text-blue-600 shadow-sm border border-slate-200/50" 
-                        : "text-slate-400 hover:text-slate-600"
-                    )}
-                  >
-                    Perfil Admin
-                  </button>
-                </div>
-
-                {/* Dynamic Helper Info */}
-                <p className="text-center text-[9px] font-bold uppercase tracking-wide text-slate-500 leading-normal bg-slate-50 border border-slate-100 p-2 rounded-xl animate-in fade-in duration-150">
-                  {tempRole === 'sindico' 
-                    ? "🔒 Digite o PIN de um Síndico ou Administrador cadastrado para liberar o painel."
-                    : "👑 Digite o PIN de um Administrador cadastrado para liberar o painel completo."}
-                </p>
-
-                {/* PIN Display bullets */}
-                <div className="flex justify-center gap-3 py-2">
-                  {[0, 1, 2, 3, 4, 5].map((idx) => (
-                    <div
-                      key={idx}
-                      className={cn(
-                        "w-3.5 h-3.5 rounded-full border-2 transition-all duration-150",
-                        pinValue.length > idx 
-                          ? "bg-blue-600 border-blue-600 scale-110" 
-                          : "border-slate-300 bg-slate-50"
-                      )}
-                    />
-                  ))}
-                </div>
-
-                {/* PIN Keyboard */}
-                <div className="grid grid-cols-3 gap-3 animate-none">
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-                    <button
-                      key={num}
-                      onClick={() => {
-                        if (pinValue.length < 6) {
-                          const newVal = pinValue + num;
-                          setPinValue(newVal);
-                          if (newVal.length === 4) {
-                            const match = porteiros.find(p => p.pin === newVal && p.active);
-                            if (match) {
-                              const success = handleAdminPanelPinSubmit(newVal);
-                              if (success) {
-                                setPinValue('');
-                              }
-                            }
-                          } else if (newVal.length === 6) {
-                            const success = handleAdminPanelPinSubmit(newVal);
-                            if (success) {
-                              setPinValue('');
-                            } else {
-                              setTimeout(() => setPinValue(''), 400);
-                            }
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1.5">
+                      Senha Administrativa
+                    </label>
+                    <input
+                      type="password"
+                      value={pinValue}
+                      onChange={(e) => setPinValue(e.target.value)}
+                      placeholder="Digite a senha..."
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const success = handleAdminPanelPinSubmit(pinValue);
+                          if (success) {
+                            setPinValue('');
                           }
                         }
                       }}
-                      className="h-14 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-base font-black text-slate-700 rounded-2xl active:scale-95 transition-all uppercase"
-                    >
-                      {num}
-                    </button>
-                  ))}
-                  <button
-                    onClick={() => setPinValue('')}
-                    className="h-14 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-xs font-black text-slate-600 rounded-2xl active:scale-95 transition-all uppercase animate-none"
-                  >
-                    Limpar
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (pinValue.length < 6) {
-                        const newVal = pinValue + '0';
-                        setPinValue(newVal);
-                        if (newVal.length === 4) {
-                          const match = porteiros.find(p => p.pin === newVal && p.active);
-                          if (match) {
-                            const success = handleAdminPanelPinSubmit(newVal);
-                            if (success) {
-                              setPinValue('');
-                            }
-                          }
-                        } else if (newVal.length === 6) {
-                          const success = handleAdminPanelPinSubmit(newVal);
-                          if (success) {
-                            setPinValue('');
-                          } else {
-                            setTimeout(() => setPinValue(''), 400);
-                          }
-                        }
-                      }
-                    }}
-                    className="h-14 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-base font-black text-slate-700 rounded-2xl active:scale-95 transition-all uppercase"
-                  >
-                    0
-                  </button>
-                  <button
-                    onClick={() => setPinValue(prev => prev.slice(0, -1))}
-                    className="h-14 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-xs font-black text-slate-600 rounded-2xl active:scale-95 transition-all uppercase"
-                  >
-                    Apagar
-                  </button>
-                </div>
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold tracking-widest focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-800 text-center"
+                    />
+                  </div>
 
-                {pinValue.length >= 4 && (
                   <button
                     onClick={() => {
                       const success = handleAdminPanelPinSubmit(pinValue);
                       if (success) {
                         setPinValue('');
-                      } else {
-                        setTimeout(() => setPinValue(''), 400);
                       }
                     }}
-                    className="w-full bg-blue-600 hover:bg-blue-500 active:scale-95 border border-blue-500 py-3.5 px-6 rounded-2xl text-[10px] font-black text-white uppercase tracking-widest transition-all mt-1 flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 animate-in fade-in duration-150"
+                    className="w-full bg-blue-600 hover:bg-blue-500 active:scale-95 border border-blue-500 py-3.5 px-6 rounded-2xl text-xs font-black text-white uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20"
                   >
                     <Shield className="w-4 h-4" />
-                    Confirmar PIN
+                    <span>Liberar Acesso</span>
                   </button>
-                )}
-
-                {/* Quick Access for Grader/Reviewer */}
-                <div className="border-t border-slate-100 pt-5 space-y-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => {
-                        const sindicoPorter = porteiros.find(p => p.active && (p.role.toLowerCase().includes('sindico') || p.role.toLowerCase().includes('síndico')));
-                        if (sindicoPorter) {
-                          localStorage.setItem('portaria_logged_porter_id', sindicoPorter.id);
-                          setLoggedPorterId(sindicoPorter.id);
-                          setTempRole('sindico');
-                          setDeviceStatus('authorized');
-                          setView('admin');
-                          
-                          const now = new Date();
-                          const formattedTime = format(now, 'HH:mm');
-                          const newLogVal = {
-                            id: crypto.randomUUID(),
-                            timestamp: formattedTime,
-                            action: `ATALHO: SÍNDICO AUTENTICOU NO PAINEL ADMINISTRATIVO (PIN): ${sindicoPorter.name} (${sindicoPorter.role})`,
-                            operator: sindicoPorter.name
-                          };
-                          setOperationalLogs((prev: any) => [newLogVal, ...prev]);
-
-                          toast.success('AUTENTICADO COMO SÍNDICO', {
-                            description: `Painel operacional com permissões de síndico liberado para ${sindicoPorter.name}.`,
-                            icon: <Check className="w-4 h-4 text-emerald-500" />
-                          });
-                        } else {
-                          toast.error('NENHUM SÍNDICO ATIVO ENCONTRADO', {
-                            description: 'Por favor, cadastre um Síndico na Gestão de Usuários.'
-                          });
-                        }
-                      }}
-                      className="h-12 bg-blue-50 hover:bg-blue-100 border border-blue-100 hover:border-blue-200 text-[10px] font-black uppercase text-blue-700 rounded-2xl transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
-                    >
-                      🔓 Atalho Síndico
-                    </button>
-                    <button
-                      onClick={() => {
-                        let adminPorter = porteiros.find(p => p.active && (p.role.toLowerCase().includes('admin') || p.role.toLowerCase().includes('supervisor') || p.role.toLowerCase().includes('geral')));
-                        
-                        if (!adminPorter) {
-                          adminPorter = porteiros.find(p => p.role.toLowerCase().includes('admin') || p.role.toLowerCase().includes('supervisor') || p.role.toLowerCase().includes('geral'));
-                        }
-                        
-                        if (!adminPorter) {
-                          toast.error('NENHUM ADMINISTRADOR ATIVO ENCONTRADO', {
-                            description: 'Por favor, cadastre um Administrador na Gestão de Usuários.'
-                          });
-                          return;
-                        }
-
-                        localStorage.setItem('portaria_logged_porter_id', adminPorter.id);
-                        setLoggedPorterId(adminPorter.id);
-                        setTempRole('admin');
-                        setDeviceStatus('authorized');
-                        setView('admin');
-
-                        const now = new Date();
-                        const formattedTime = format(now, 'HH:mm');
-                        const newLogVal = {
-                          id: crypto.randomUUID(),
-                          timestamp: formattedTime,
-                          action: `ATALHO: ADMINISTRADOR AUTENTICOU NO PAINEL COMPLETO (PIN): ${adminPorter.name} (${adminPorter.role})`,
-                          operator: adminPorter.name
-                        };
-                        setOperationalLogs((prev: any) => [newLogVal, ...prev]);
-
-                        toast.success('AUTENTICADO COMO ADMINISTRADOR', {
-                          description: `Painel administrativo completo (Admin) liberado para ${adminPorter.name}.`,
-                          icon: <Check className="w-4 h-4 text-emerald-500" />
-                        });
-                      }}
-                      className="h-12 bg-emerald-50 hover:bg-emerald-100 border border-emerald-100 hover:border-emerald-200 text-[10px] font-black uppercase text-emerald-700 rounded-2xl transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
-                    >
-                      👑 Atalho Admin
-                    </button>
-                  </div>
-                  <p className="text-center text-[9px] font-black text-slate-400 uppercase leading-normal">
-                    Filtros de Perfil Ativos • PINs Vinculados aos Usuários Cadastrados
-                  </p>
                 </div>
               </div>
             ) : (
@@ -5132,12 +5507,12 @@ export default function App() {
                     messageTemplates={messageTemplates}
                     permanentProfiles={permanentProfiles}
                     porteiros={porteiros}
-                    onUpdatePorteiros={setPorteiros}
+                    onUpdatePorteiros={handleUpdatePorteiros}
                     loggedPorterName={loggedPorter?.name}
                     onRegisterOperationalLog={handleRegisterOperationalLog}
                     onUpdateFrequents={setFrequentVisitors}
                     onUpdatePreAuths={setPreAuths}
-                    onUpdateUnitPhones={setUnitPhones}
+                    onUpdateUnitPhones={handleUpdateUnitPhones}
                     onUpdateUnitRules={setUnitRules}
                     onUpdateCondoInfo={setCondoInfo}
                     onUpdateAdminUsers={setAdminUsers}

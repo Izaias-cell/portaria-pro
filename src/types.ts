@@ -169,6 +169,8 @@ export interface AccessRecord {
   prismaId?: string;
   prismaNumber?: string;
   prismaColor?: string;
+  morador_solicitante_id?: string;
+  morador_solicitante_nome?: string;
 }
 
 export interface Prisma {

@@ -1,0 +1,16 @@
+{
+  "name": "Portaria Pro",
+  "short_name": "Portaria Pro",
+  "description": "Sistema de controle de acesso para portarias de condomínio.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

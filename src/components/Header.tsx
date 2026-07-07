@@ -9,6 +9,7 @@ interface HeaderProps {
   onToggleMute?: () => void;
   loggedPorterName?: string;
   loggedPorterRole?: string;
+  loggedPorterEmail?: string;
   onLogoutShift?: () => void;
 }
 
@@ -18,6 +19,7 @@ export function Header({
   onToggleMute,
   loggedPorterName,
   loggedPorterRole,
+  loggedPorterEmail,
   onLogoutShift
 }: HeaderProps) {
   const [now, setNow] = useState(Date.now());
@@ -59,7 +61,7 @@ export function Header({
       </div>
       
       <div className="flex items-center gap-3 sm:gap-6 shrink-0 ml-4">
-        {loggedPorterName && (
+        {(loggedPorterName || loggedPorterEmail) && (
           <div 
             onClick={onLogoutShift}
             className="flex items-center gap-2 xs:gap-3 bg-slate-800/50 hover:bg-slate-700/60 hover:border-slate-700 active:scale-[0.98] px-3 py-1.5 rounded-2xl border border-slate-800/50 min-w-0 text-left cursor-pointer transition-all group"
@@ -69,8 +71,17 @@ export function Header({
               <UserCheck className="w-4 h-4" />
             </div>
             <div className="min-w-0">
-              <div className="text-[8px] font-black uppercase text-slate-500 group-hover:text-slate-400 leading-none tracking-wider transition-colors">Porteiro Logado</div>
-              <div className="text-[10px] font-black uppercase text-slate-200 mt-1 truncate max-w-[100px] xs:max-w-[130px] group-hover:text-white transition-colors">{loggedPorterName}</div>
+              <div className="text-[9px] font-black text-slate-500 group-hover:text-slate-400 leading-none tracking-wider transition-colors">
+                {(() => {
+                  const r = (loggedPorterRole || '').toLowerCase();
+                  if (r.includes('admin')) return 'Administrador logado';
+                  if (r.includes('sindico') || r.includes('síndico')) return 'Síndico logado';
+                  return 'Porteiro logado';
+                })()}
+              </div>
+              <div className="text-[10px] font-black uppercase text-slate-200 mt-1 truncate max-w-[100px] xs:max-w-[130px] group-hover:text-white transition-colors">
+                {loggedPorterName || loggedPorterEmail || 'Usuário'}
+              </div>
               {loggedPorterRole && (
                 <div className="text-[7px] font-black uppercase text-blue-400 mt-0.5 tracking-wider hidden sm:block truncate leading-none">
                   {loggedPorterRole}
