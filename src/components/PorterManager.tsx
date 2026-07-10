@@ -49,6 +49,8 @@ export function PorterManager({
   
   // Condominios list
   const [condominios, setCondominios] = useState<Condominio[]>([]);
+  const [isLoadingCondos, setIsLoadingCondos] = useState(true);
+  const [condoError, setCondoError] = useState<string | null>(null);
 
   // Form State
   const [name, setName] = useState('');
@@ -62,23 +64,77 @@ export function PorterManager({
 
   // Fetch condominios and find default
   useEffect(() => {
+    let isMounted = true;
     async function fetchCondominios() {
-      const { data, error } = await supabase
-        .from('condominios')
-        .select('id, nome');
-      if (!error && data) {
-        setCondominios(data);
-        const matched = data.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
-        if (matched) {
-          setPorterCondo(matched.id);
-        } else if (data.length > 0) {
-          setPorterCondo(data[0].id);
+      if (isMounted) {
+        setIsLoadingCondos(true);
+        setCondoError(null);
+      }
+      try {
+        console.log('Buscando condomínios do Supabase...');
+        const { data, error } = await supabase
+          .from('condominios')
+          .select('id, nome');
+        
+        if (!isMounted) return;
+
+        if (error) {
+          console.error('Erro ao buscar condominios do Supabase no console:', error);
+          setCondoError(error.message || JSON.stringify(error));
+          
+          // Fallback to localStorage if available
+          const saved = localStorage.getItem('portaria_condominios');
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              if (parsed && parsed.length > 0) {
+                setCondominios(parsed);
+                const matched = parsed.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
+                setPorterCondo(matched ? matched.id : parsed[0].id);
+                setIsLoadingCondos(false);
+                return;
+              }
+            } catch (e) {}
+          }
+          
+          // No cached data, use BELLE VILLE hardcoded fallback
+          const fallback = [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
+          setCondominios(fallback);
+          setPorterCondo(fallback[0].id);
+        } else if (data && data.length > 0) {
+          setCondominios(data);
+          localStorage.setItem('portaria_condominios', JSON.stringify(data));
+          const matched = data.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
+          if (matched) {
+            setPorterCondo(matched.id);
+          } else {
+            setPorterCondo(data[0].id);
+          }
+        } else {
+          // If query returned no rows, use BELLE VILLE hardcoded fallback as unique option
+          console.log('Tabela condominios está vazia. Usando BELLE VILLE como opção padrão.');
+          const fallback = [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
+          setCondominios(fallback);
+          setPorterCondo(fallback[0].id);
         }
-      } else {
-        console.error('Erro ao buscar condominios:', error);
+      } catch (err: any) {
+        console.error('Erro inesperado ao carregar condominios:', err);
+        if (isMounted) {
+          setCondoError(err.message || 'Erro inesperado de rede');
+          const fallback = [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
+          setCondominios(fallback);
+          setPorterCondo(fallback[0].id);
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingCondos(false);
+        }
       }
     }
     fetchCondominios();
+    return () => {
+      isMounted = false;
+    };
   }, [condoName]);
 
   // Show/Hide PIN toggle state per porter
@@ -94,7 +150,7 @@ export function PorterManager({
     setRole('Porteiro');
     setActive(true);
     const matched = condominios.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
-    setPorterCondo(matched ? matched.id : (condominios[0]?.id || ''));
+    setPorterCondo(matched ? matched.id : (condominios[0]?.id || 'b34e2c05-bf73-45a1-968c-db505d97f1f9'));
     setNotes('');
     setPhone('');
     setEmail('');
@@ -123,7 +179,7 @@ export function PorterManager({
     if (!selectedCondoId && condominios.length > 0) {
       selectedCondoId = condominios[0].id;
     }
-    setPorterCondo(selectedCondoId);
+    setPorterCondo(selectedCondoId || 'b34e2c05-bf73-45a1-968c-db505d97f1f9');
 
     setNotes(porter.notes || '');
     setPhone(porter.phone || '');
@@ -580,13 +636,15 @@ export function PorterManager({
                   <Building className="absolute left-3.5 top-3 w-4 h-4 text-slate-400 z-10" />
                   <select
                     required
-                    disabled={isSaving}
+                    disabled={isSaving || isLoadingCondos}
                     value={porterCondo}
                     onChange={(e) => setPorterCondo(e.target.value)}
                     className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold tracking-normal uppercase focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-850 disabled:opacity-60 disabled:cursor-not-allowed appearance-none"
                   >
-                    {condominios.length === 0 ? (
+                    {isLoadingCondos ? (
                       <option value="">Carregando condomínios...</option>
+                    ) : condominios.length === 0 ? (
+                      <option value="">Nenhum condomínio encontrado</option>
                     ) : (
                       condominios.map((condominio) => (
                         <option key={condominio.id} value={condominio.id}>
@@ -596,6 +654,11 @@ export function PorterManager({
                     )}
                   </select>
                 </div>
+                {condoError && (
+                  <p className="text-[10px] text-red-500 mt-1 font-bold">
+                    Aviso: {condoError}. Usando fallback local.
+                  </p>
+                )}
                 <p className="text-[9px] font-bold text-slate-400 uppercase mt-1 leading-none tracking-wider">
                   * Garante restrição de acesso por condomínio.
                 </p>

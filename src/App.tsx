@@ -607,10 +607,13 @@ export default function App() {
     const saved = localStorage.getItem('portaria_condominios');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.length > 0) {
+          return parsed;
+        }
       } catch (e) {}
     }
-    return [];
+    return [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
   });
 
   const [loggedPorterId, setLoggedPorterId] = useState<string | null>(() => {
@@ -664,14 +667,28 @@ export default function App() {
       const { data: condosData, error: condosError } = await supabase
         .from('condominios')
         .select('id, nome');
-      if (!condosError && condosData) {
+      if (!condosError && condosData && condosData.length > 0) {
         localCondos = condosData;
         setCondominios(condosData);
         localStorage.setItem('portaria_condominios', JSON.stringify(condosData));
       } else {
+        if (condosError) {
+          console.error('Erro ao buscar condominios do Supabase:', condosError.message);
+        }
         const saved = localStorage.getItem('portaria_condominios');
         if (saved) {
-          try { localCondos = JSON.parse(saved); } catch (e) {}
+          try { 
+            const parsed = JSON.parse(saved); 
+            if (parsed && parsed.length > 0) {
+              localCondos = parsed;
+              setCondominios(parsed);
+            }
+          } catch (e) {}
+        }
+        
+        if (localCondos.length === 0) {
+          localCondos = [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
+          setCondominios(localCondos);
         }
       }
 
