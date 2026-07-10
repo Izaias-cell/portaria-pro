@@ -372,6 +372,7 @@ export function PorterManager({
         authUserId = signUpData.user.id;
 
         // 2. Insert the profile in the perfis table using the registered user's ID
+        console.log("CONDÔMINIO SELECIONADO:", porterCondo);
         const insertPayload = {
           id: authUserId,
           nome: trimmedName,
