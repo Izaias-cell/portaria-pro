@@ -3,7 +3,7 @@ import { Header } from './components/Header';
 import { QuickActions } from './components/QuickActions';
 import { AccessForm } from './components/AccessForm';
 import { AccessLog } from './components/AccessLog';
-import { AccessType, AccessRecord, FrequentVisitor, AccessRule, PreAuthorization, UnitPhone, UnitRules, UserRole, CondoInfo, AdminUser, SystemSettings, MessageTemplates, PermanentProfile, Prisma, Porteiro } from './types';
+import { AccessType, AccessRecord, FrequentVisitor, AccessRule, PreAuthorization, UnitPhone, UnitRules, UserRole, CondoInfo, AdminUser, SystemSettings, MessageTemplates, PermanentProfile, Prisma, Porteiro, Condominio } from './types';
 import { toast, ToastMessage, toastStore } from './lib/toast';
 import { Search, Filter, Trash2, Download, Check, Users, Home as HomeIcon, Calendar, Shield, User, Bike, Wrench, MapPin, Car, Clock, Zap, X, Plus, MessageSquare, Edit2, Copy, AlertTriangle, History, Sliders, Camera, LogOut } from 'lucide-react';
 import { format, isAfter, subWeeks } from 'date-fns';
@@ -603,6 +603,16 @@ export default function App() {
     return loaded;
   });
 
+  const [condominios, setCondominios] = useState<Condominio[]>(() => {
+    const saved = localStorage.getItem('portaria_condominios');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {}
+    }
+    return [];
+  });
+
   const [loggedPorterId, setLoggedPorterId] = useState<string | null>(() => {
     return localStorage.getItem('portaria_logged_porter_id');
   });
@@ -650,6 +660,21 @@ export default function App() {
 
   const loadPorteirosFromSupabase = useCallback(async () => {
     try {
+      let localCondos: Condominio[] = [];
+      const { data: condosData, error: condosError } = await supabase
+        .from('condominios')
+        .select('id, nome');
+      if (!condosError && condosData) {
+        localCondos = condosData;
+        setCondominios(condosData);
+        localStorage.setItem('portaria_condominios', JSON.stringify(condosData));
+      } else {
+        const saved = localStorage.getItem('portaria_condominios');
+        if (saved) {
+          try { localCondos = JSON.parse(saved); } catch (e) {}
+        }
+      }
+
       const { data: profiles, error } = await supabase
         .from('perfis')
         .select('*');
@@ -689,15 +714,28 @@ export default function App() {
           // Clean notes by removing the [PWD:...] tag if present
           const cleanNotes = rawNotes.replace(/\[PWD:(.*?)\]/, '').trim();
 
+          // Resolve condoName from condominio_id UUID
+          let resolvedCondoName = condoInfo.name;
+          if (p.condominio_id) {
+            const matchedC = localCondos.find((c: any) => c.id === p.condominio_id);
+            if (matchedC) {
+              resolvedCondoName = matchedC.nome;
+            }
+          } else if (p.condominio || p.condo || p.condoName) {
+            resolvedCondoName = p.condominio || p.condo || p.condoName;
+          }
+
           return {
             id: p.id,
             name: p.nome || p.name || 'Usuário',
             pin: extractedPin, // password/credential
             role: displayedRole,
             active: p.active !== false,
-            condoName: p.condominio || p.condo || p.condoName || condoInfo.name,
+            condoName: resolvedCondoName,
             email: p.email || '',
-            notes: cleanNotes
+            notes: cleanNotes,
+            phone: p.telefone || p.phone || '',
+            condominio_id: p.condominio_id || ''
           };
         });
 
@@ -2783,42 +2821,30 @@ export default function App() {
           }
 
           if (signUpData.user) {
-            const notesWithPwd = `${np.notes || ''} [PWD:${np.pin}]`.trim();
-            const rawPayload: any = {
+            let selectedCondoId = np.condominio_id || '';
+            if (!selectedCondoId && np.condoName) {
+              const matched = condominios.find(c => c.nome.toLowerCase() === np.condoName.toLowerCase());
+              if (matched) {
+                selectedCondoId = matched.id;
+              }
+            }
+            if (!selectedCondoId && condominios.length > 0) {
+              selectedCondoId = condominios[0].id;
+            }
+
+            const insertPayload = {
               id: signUpData.user.id,
               nome: np.name,
               email: np.email,
-              funcao: funcaoDb,
-              active: np.active !== false,
               telefone: np.phone || '',
-              phone: np.phone || '',
-              observacoes: notesWithPwd,
-              notes: notesWithPwd,
-              pin: np.pin,
-              password: np.pin
+              funcao: funcaoDb,
+              active: true,
+              condominio_id: selectedCondoId || null
             };
 
-            const insertPayload = buildProfilePayload(rawPayload, cols);
-
-            let { error: profileError } = await supabase
+            const { error: profileError } = await supabase
               .from('perfis')
               .insert(insertPayload);
-
-            if (profileError) {
-              console.warn('Erro ao criar perfil completo, tentando simplificado:', profileError.message);
-              const { error: minimalError } = await supabase
-                .from('perfis')
-                .insert({
-                  id: signUpData.user.id,
-                  nome: np.name,
-                  email: np.email,
-                  funcao: funcaoDb,
-                  active: np.active !== false,
-                  observacoes: notesWithPwd,
-                  notes: notesWithPwd
-                });
-              profileError = minimalError;
-            }
 
             if (profileError) {
               console.error('Erro crítico ao criar perfil na tabela perfis:', profileError.message);
@@ -2834,7 +2860,6 @@ export default function App() {
             original.active !== np.active || 
             original.condoName !== np.condoName ||
             original.email !== np.email ||
-            original.notes !== np.notes ||
             original.phone !== np.phone;
 
           if (hasChanged) {
@@ -2843,43 +2868,34 @@ export default function App() {
               funcaoDb = 'admin';
             }
             console.log('Atualizando perfil no Supabase:', np.id);
-            const notesWithPwd = `${np.notes || ''} [PWD:${np.pin}]`.trim();
-            const rawPayload: any = {
-              id: np.id,
+
+            let selectedCondoId = np.condominio_id || '';
+            if (!selectedCondoId && np.condoName) {
+              const matched = condominios.find(c => c.nome.toLowerCase() === np.condoName.toLowerCase());
+              if (matched) {
+                selectedCondoId = matched.id;
+              }
+            }
+            if (!selectedCondoId && condominios.length > 0) {
+              selectedCondoId = condominios[0].id;
+            }
+
+            const updatePayload: any = {
               nome: np.name,
-              email: np.email,
+              telefone: np.phone || '',
               funcao: funcaoDb,
               active: np.active !== false,
-              telefone: np.phone || '',
-              phone: np.phone || '',
-              observacoes: notesWithPwd,
-              notes: notesWithPwd,
-              pin: np.pin,
-              password: np.pin
+              condominio_id: selectedCondoId || null
             };
 
-            const updatePayload = buildProfilePayload(rawPayload, cols);
+            if (np.email) {
+              updatePayload.email = np.email;
+            }
 
-            let { error: profileError } = await supabase
+            const { error: profileError } = await supabase
               .from('perfis')
               .update(updatePayload)
               .eq('id', np.id);
-
-            if (profileError) {
-              console.warn('Erro ao atualizar perfil completo, tentando simplificado:', profileError.message);
-              const { error: minimalError } = await supabase
-                .from('perfis')
-                .update({
-                  nome: np.name,
-                  email: np.email,
-                  funcao: funcaoDb,
-                  active: np.active !== false,
-                  observacoes: notesWithPwd,
-                  notes: notesWithPwd
-                })
-                .eq('id', np.id);
-              profileError = minimalError;
-            }
 
             if (profileError) {
               console.error('Erro ao atualizar perfil na tabela perfis:', profileError.message);

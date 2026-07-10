@@ -285,6 +285,13 @@ export interface Porteiro {
   notes?: string;
   phone?: string;
   email?: string;
+  condominio_id?: string;
 }
+
+export interface Condominio {
+  id: string;
+  nome: string;
+}
+
 
 

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   ShieldCheck, 
   Plus, 
@@ -20,7 +20,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { Porteiro } from '../types';
+import { Porteiro, Condominio } from '../types';
 import { supabase, tempSupabase, getProfileTableColumns, buildProfilePayload } from '../lib/supabase';
 
 interface PorterManagerProps {
@@ -47,15 +47,39 @@ export function PorterManager({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   
+  // Condominios list
+  const [condominios, setCondominios] = useState<Condominio[]>([]);
+
   // Form State
   const [name, setName] = useState('');
   const [pin, setPin] = useState('');
   const [role, setRole] = useState('Porteiro');
   const [active, setActive] = useState(true);
-  const [porterCondo, setPorterCondo] = useState(condoName);
+  const [porterCondo, setPorterCondo] = useState('');
   const [notes, setNotes] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
+
+  // Fetch condominios and find default
+  useEffect(() => {
+    async function fetchCondominios() {
+      const { data, error } = await supabase
+        .from('condominios')
+        .select('id, nome');
+      if (!error && data) {
+        setCondominios(data);
+        const matched = data.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
+        if (matched) {
+          setPorterCondo(matched.id);
+        } else if (data.length > 0) {
+          setPorterCondo(data[0].id);
+        }
+      } else {
+        console.error('Erro ao buscar condominios:', error);
+      }
+    }
+    fetchCondominios();
+  }, [condoName]);
 
   // Show/Hide PIN toggle state per porter
   const [revealedPins, setRevealedPins] = useState<Record<string, boolean>>({});
@@ -69,7 +93,8 @@ export function PorterManager({
     setPin('');
     setRole('Porteiro');
     setActive(true);
-    setPorterCondo(condoName);
+    const matched = condominios.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
+    setPorterCondo(matched ? matched.id : (condominios[0]?.id || ''));
     setNotes('');
     setPhone('');
     setEmail('');
@@ -86,7 +111,20 @@ export function PorterManager({
     setPin(porter.pin);
     setRole(porter.role);
     setActive(porter.active);
-    setPorterCondo(porter.condoName || condoName);
+    
+    // Resolve matching condo UUID if porter.condominio_id is not set but condoName is
+    let selectedCondoId = porter.condominio_id || '';
+    if (!selectedCondoId && porter.condoName) {
+      const matched = condominios.find(c => c.nome.toLowerCase() === porter.condoName.toLowerCase());
+      if (matched) {
+        selectedCondoId = matched.id;
+      }
+    }
+    if (!selectedCondoId && condominios.length > 0) {
+      selectedCondoId = condominios[0].id;
+    }
+    setPorterCondo(selectedCondoId);
+
     setNotes(porter.notes || '');
     setPhone(porter.phone || '');
     setEmail(porter.email || '');
@@ -192,53 +230,32 @@ export function PorterManager({
         funcaoDb = 'sindico';
       }
 
-      // Descobre quais colunas existem de fato na tabela perfis
-      const cols = await getProfileTableColumns();
-      console.log('Colunas reais detectadas em perfis:', cols);
-
       if (editingPorterId) {
         // --- EDITING EXISTING USER ---
-        const notesWithPwd = `${notes.trim()} [PWD:${trimmedPin}]`.trim();
-        const rawPayload: any = {
-          id: editingPorterId,
+        const updatePayload: any = {
           nome: trimmedName,
-          email: trimmedEmail,
+          telefone: phone.trim() || '',
           funcao: funcaoDb,
           active: active !== false,
-          telefone: phone.trim() || '',
-          phone: phone.trim() || '',
-          observacoes: notesWithPwd,
-          notes: notesWithPwd,
-          pin: trimmedPin,
-          password: trimmedPin
+          condominio_id: porterCondo || null
         };
 
-        const updatePayload = buildProfilePayload(rawPayload, cols);
+        // Send email only if we have it and editing is permitted
+        if (trimmedEmail) {
+          updatePayload.email = trimmedEmail;
+        }
 
-        let { error: profileError } = await supabase
+        const { error: profileError } = await supabase
           .from('perfis')
           .update(updatePayload)
           .eq('id', editingPorterId);
 
         if (profileError) {
-          console.warn('Erro ao atualizar perfil com colunas mapeadas, tentando simplificado:', profileError.message);
-          const { error: minimalError } = await supabase
-            .from('perfis')
-            .update({
-              nome: trimmedName,
-              email: trimmedEmail,
-              funcao: funcaoDb,
-              active: active !== false,
-              observacoes: notesWithPwd,
-              notes: notesWithPwd
-            })
-            .eq('id', editingPorterId);
-          profileError = minimalError;
-        }
-
-        if (profileError) {
           throw new Error(`Erro ao atualizar perfil no banco de dados: ${profileError.message}`);
         }
+
+        const matchedCondo = condominios.find(c => c.id === porterCondo);
+        const resolvedCondoName = matchedCondo ? matchedCondo.nome : condoName;
 
         const updated = porteiros.map(p => {
           if (p.id === editingPorterId) {
@@ -248,10 +265,11 @@ export function PorterManager({
               pin: trimmedPin,
               role,
               active,
-              condoName: porterCondo,
+              condoName: resolvedCondoName,
               notes: notes.trim() || undefined,
               phone: phone.trim() || undefined,
-              email: trimmedEmail
+              email: trimmedEmail,
+              condominio_id: porterCondo
             };
           }
           return p;
@@ -280,93 +298,44 @@ export function PorterManager({
       } else {
         // --- CREATING NEW USER ---
         let authUserId = '';
-        let createdUser = null;
 
-        // 1. Try to invoke safe Supabase Edge Function first
-        try {
-          console.log('Tentando cadastrar usuário via Supabase Edge Function / secure endpoint...');
-          const { data: edgeData, error: edgeError } = await supabase.functions.invoke('create-user', {
-            body: {
-              email: trimmedEmail,
-              password: trimmedPin,
-              name: trimmedName,
-              role: funcaoDb,
-              phone: phone.trim() || undefined,
-              condoName: porterCondo
-            }
-          });
+        // Register in Supabase Auth directly using tempSupabase client
+        const { data: signUpData, error: signUpError } = await tempSupabase.auth.signUp({
+          email: trimmedEmail,
+          password: trimmedPin
+        });
 
-          if (!edgeError && edgeData?.user) {
-            createdUser = edgeData.user;
-            authUserId = edgeData.user.id;
-            console.log('Usuário cadastrado com sucesso via Edge Function:', createdUser);
-          } else if (edgeError) {
-            console.warn('Erro retornado pela Edge Function, tentando fallback:', edgeError);
-          }
-        } catch (edgeErr) {
-          console.warn('Erro ao invocar Edge Function (pode não estar implantada). Usando fallback seguro:', edgeErr);
+        if (signUpError) {
+          throw new Error(`Erro ao cadastrar usuário no Supabase Auth: ${signUpError.message}`);
         }
 
-        // Fallback: Register in Supabase Auth directly using tempSupabase client
-        if (!createdUser) {
-          const { data: signUpData, error: signUpError } = await tempSupabase.auth.signUp({
-            email: trimmedEmail,
-            password: trimmedPin
-          });
-
-          if (signUpError) {
-            throw new Error(`Erro ao cadastrar usuário no Supabase Auth: ${signUpError.message}`);
-          }
-
-          if (!signUpData.user) {
-            throw new Error('Falha ao obter dados do usuário do Supabase Auth.');
-          }
-
-          createdUser = signUpData.user;
-          authUserId = signUpData.user.id;
+        if (!signUpData.user) {
+          throw new Error('Falha ao obter dados do usuário do Supabase Auth.');
         }
+
+        authUserId = signUpData.user.id;
 
         // 2. Insert the profile in the perfis table using the registered user's ID
-        const notesWithPwd = `${notes.trim()} [PWD:${trimmedPin}]`.trim();
-        const rawPayload: any = {
+        const insertPayload = {
           id: authUserId,
           nome: trimmedName,
           email: trimmedEmail,
-          funcao: funcaoDb,
-          active: active !== false,
           telefone: phone.trim() || '',
-          phone: phone.trim() || '',
-          observacoes: notesWithPwd,
-          notes: notesWithPwd,
-          pin: trimmedPin,
-          password: trimmedPin
+          funcao: funcaoDb,
+          active: true, // as requested: "active: true"
+          condominio_id: porterCondo || null
         };
 
-        const insertPayload = buildProfilePayload(rawPayload, cols);
-
-        let { error: profileError } = await supabase
+        const { error: profileError } = await supabase
           .from('perfis')
           .insert(insertPayload);
 
         if (profileError) {
-          console.warn('Erro ao criar perfil completo, tentando simplificado:', profileError.message);
-          const { error: minimalError } = await supabase
-            .from('perfis')
-            .insert({
-              id: authUserId,
-              nome: trimmedName,
-              email: trimmedEmail,
-              funcao: funcaoDb,
-              active: active !== false,
-              observacoes: notesWithPwd,
-              notes: notesWithPwd
-            });
-          profileError = minimalError;
+          throw new Error(`O usuário foi criado no Supabase Authentication (Auth), mas a criação de seu perfil associado na tabela 'perfis' não pôde ser concluída: ${profileError.message}`);
         }
 
-        if (profileError) {
-          throw new Error(`Erro ao salvar perfil no banco de dados: ${profileError.message}`);
-        }
+        const matchedCondo = condominios.find(c => c.id === porterCondo);
+        const resolvedCondoName = matchedCondo ? matchedCondo.nome : condoName;
 
         // 3. Add to local list and notify parent with the real auth ID
         const newPorter: Porteiro = {
@@ -374,11 +343,12 @@ export function PorterManager({
           name: trimmedName,
           pin: trimmedPin,
           role,
-          active,
-          condoName: porterCondo,
+          active: true,
+          condoName: resolvedCondoName,
           notes: notes.trim() || undefined,
           phone: phone.trim() || undefined,
-          email: trimmedEmail
+          email: trimmedEmail,
+          condominio_id: porterCondo
         };
 
         onUpdatePorteiros([...porteiros, newPorter]);
@@ -388,7 +358,7 @@ export function PorterManager({
 
         setSaveSuccess('Usuário cadastrado com sucesso!');
         toast.success('Usuário cadastrado com sucesso!', {
-          description: `${trimmedName} agora tem acesso ao condomínio ${porterCondo}.`
+          description: `${trimmedName} agora tem acesso ao condomínio ${resolvedCondoName}.`
         });
 
         // Clear input fields but keep success state visible
@@ -606,17 +576,25 @@ export function PorterManager({
                 <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1.5">
                   Condomínio Vinculado *
                 </label>
-                <div className="relative">
-                  <Building className="absolute left-3.5 top-3 w-4 h-4 text-slate-400" />
-                  <input
-                    type="text"
+                <div className="relative font-semibold">
+                  <Building className="absolute left-3.5 top-3 w-4 h-4 text-slate-400 z-10" />
+                  <select
                     required
                     disabled={isSaving}
                     value={porterCondo}
                     onChange={(e) => setPorterCondo(e.target.value)}
-                    placeholder="Nome do Condomínio"
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-black uppercase tracking-tight focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-805 disabled:opacity-60 disabled:cursor-not-allowed"
-                  />
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold tracking-normal uppercase focus:ring-2 focus:ring-blue-500/20 outline-none text-slate-850 disabled:opacity-60 disabled:cursor-not-allowed appearance-none"
+                  >
+                    {condominios.length === 0 ? (
+                      <option value="">Carregando condomínios...</option>
+                    ) : (
+                      condominios.map((condominio) => (
+                        <option key={condominio.id} value={condominio.id}>
+                          {condominio.nome}
+                        </option>
+                      ))
+                    )}
+                  </select>
                 </div>
                 <p className="text-[9px] font-bold text-slate-400 uppercase mt-1 leading-none tracking-wider">
                   * Garante restrição de acesso por condomínio.
