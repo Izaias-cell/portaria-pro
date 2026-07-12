@@ -66,21 +66,19 @@ export function PorterManager({
   useEffect(() => {
     let isMounted = true;
     async function fetchCondominios() {
-      if (isMounted) {
-        setIsLoadingCondos(true);
-        setCondoError(null);
-      }
+      setIsLoadingCondos(true);
+      setCondoError(null);
       try {
         console.log('Buscando condomínios do Supabase...');
         const { data, error } = await supabase
           .from('condominios')
           .select('id, nome');
         
-        if (!isMounted) return;
-
         if (error) {
           console.error('Erro ao buscar condominios do Supabase no console:', error);
-          setCondoError(error.message || JSON.stringify(error));
+          if (isMounted) {
+            setCondoError(error.message || JSON.stringify(error));
+          }
           
           // Fallback to localStorage if available
           const saved = localStorage.getItem('portaria_condominios');
@@ -88,10 +86,11 @@ export function PorterManager({
             try {
               const parsed = JSON.parse(saved);
               if (parsed && parsed.length > 0) {
-                setCondominios(parsed);
-                const matched = parsed.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
-                setPorterCondo(matched ? matched.id : parsed[0].id);
-                setIsLoadingCondos(false);
+                if (isMounted) {
+                  setCondominios(parsed);
+                  const matched = parsed.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
+                  setPorterCondo(matched ? matched.id : parsed[0].id);
+                }
                 return;
               }
             } catch (e) {}
@@ -99,23 +98,29 @@ export function PorterManager({
           
           // No cached data, use BELLE VILLE hardcoded fallback
           const fallback = [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
-          setCondominios(fallback);
-          setPorterCondo(fallback[0].id);
+          if (isMounted) {
+            setCondominios(fallback);
+            setPorterCondo(fallback[0].id);
+          }
         } else if (data && data.length > 0) {
-          setCondominios(data);
-          localStorage.setItem('portaria_condominios', JSON.stringify(data));
-          const matched = data.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
-          if (matched) {
-            setPorterCondo(matched.id);
-          } else {
-            setPorterCondo(data[0].id);
+          if (isMounted) {
+            setCondominios(data);
+            localStorage.setItem('portaria_condominios', JSON.stringify(data));
+            const matched = data.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
+            if (matched) {
+              setPorterCondo(matched.id);
+            } else {
+              setPorterCondo(data[0].id);
+            }
           }
         } else {
           // If query returned no rows, use BELLE VILLE hardcoded fallback as unique option
           console.log('Tabela condominios está vazia. Usando BELLE VILLE como opção padrão.');
           const fallback = [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
-          setCondominios(fallback);
-          setPorterCondo(fallback[0].id);
+          if (isMounted) {
+            setCondominios(fallback);
+            setPorterCondo(fallback[0].id);
+          }
         }
       } catch (err: any) {
         console.error('Erro inesperado ao carregar condominios:', err);
@@ -126,9 +131,7 @@ export function PorterManager({
           setPorterCondo(fallback[0].id);
         }
       } finally {
-        if (isMounted) {
-          setIsLoadingCondos(false);
-        }
+        setIsLoadingCondos(false);
       }
     }
     fetchCondominios();
@@ -388,6 +391,12 @@ export function PorterManager({
           .insert(insertPayload);
 
         if (profileError) {
+          console.error('ERRO DETALHADO NO FLUXO DE CRIAÇÃO DE USUÁRIOS (TABELA PERFIS):', {
+            authUserId,
+            insertPayload,
+            errorMessage: profileError.message,
+            errorDetails: profileError
+          });
           throw new Error(`O usuário foi criado no Supabase Authentication (Auth), mas a criação de seu perfil associado na tabela 'perfis' não pôde ser concluída: ${profileError.message}`);
         }
 

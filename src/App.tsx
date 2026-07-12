@@ -2809,6 +2809,14 @@ export default function App() {
         }
 
         if (!original) {
+          // Se o id já for um UUID válido, significa que já foi cadastrado e criado com sucesso no PorterManager,
+          // portanto não devemos recriá-lo nem tentar realizar o signUp redundante no banco.
+          const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+          if (uuidRegex.test(np.id)) {
+            console.log('Perfil já possui um UUID válido e foi criado localmente no PorterManager. Pulando criação redundante:', np.id);
+            continue;
+          }
+
           // Check if this profile ID already exists in the 'perfis' table (already created in PorterManager)
           const { data: existingProfile } = await supabase
             .from('perfis')
