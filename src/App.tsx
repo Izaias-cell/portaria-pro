@@ -2779,6 +2779,88 @@ export default function App() {
       const cols = await getProfileTableColumns();
       console.log('handleUpdatePorteiros: Colunas reais detectadas em perfis:', cols);
 
+      // Fetch freshest condominios for strict UUID validation
+      console.log('Sincronizador: Buscando condomínios do banco para validação de UUID...');
+      const { data: dbCondominios, error: condosDbError } = await supabase
+        .from('condominios')
+        .select('id, nome');
+
+      if (condosDbError) {
+        console.error('Sincronizador: Erro ao buscar condomínios para validação de UUID:', condosDbError);
+      }
+
+      const activeCondos = dbCondominios || [];
+
+      // Helper function to validate and resolve condominio UUID
+      const validateAndResolveCondo = (condoId: string | undefined, condoNameStr: string | undefined) => {
+        if (activeCondos.length === 0) {
+          throw new Error('A tabela de condomínios está vazia no banco de dados. Cadastre um condomínio primeiro.');
+        }
+
+        let finalId = condoId || '';
+        let matched = activeCondos.find(c => c.id === finalId);
+
+        // If not matched, try to find by name
+        if (!matched && condoNameStr) {
+          matched = activeCondos.find(c => c.nome.toLowerCase() === condoNameStr.toLowerCase());
+          if (matched) {
+            finalId = matched.id;
+          }
+        }
+
+        // If still not matched, use the first condominium
+        if (!matched && activeCondos.length > 0) {
+          matched = activeCondos[0];
+          finalId = matched.id;
+        }
+
+        if (!matched || !finalId) {
+          throw new Error('Não foi possível associar um condomínio válido com UUID existente no banco de dados.');
+        }
+
+        // Verify it is a valid UUID
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(finalId);
+        if (!isUuid) {
+          throw new Error(`O identificador de condomínio "${finalId}" não é um UUID válido.`);
+        }
+
+        return { id: finalId, nome: matched.nome };
+      };
+
+      // Helper function to build filtered payload based on actual columns in the database
+      const buildFilteredPayloadForSync = (rawPayload: any, selectedCondoUuid: string) => {
+        if (!cols || cols.length === 0) {
+          const fallback: any = {
+            id: rawPayload.id,
+            nome: rawPayload.nome,
+            email: rawPayload.email,
+            telefone: rawPayload.telefone,
+            funcao: rawPayload.funcao,
+            condominio_id: selectedCondoUuid
+          };
+          if (rawPayload.ativo !== undefined) fallback.ativo = rawPayload.ativo;
+          if (rawPayload.active !== undefined) fallback.active = rawPayload.active;
+          return fallback;
+        }
+
+        const payload: any = {};
+        for (const col of cols) {
+          if (col === 'id' && rawPayload.id !== undefined) payload.id = rawPayload.id;
+          if (col === 'nome' && rawPayload.nome !== undefined) payload.nome = rawPayload.nome;
+          if (col === 'name' && rawPayload.nome !== undefined) payload.name = rawPayload.nome;
+          if (col === 'email' && rawPayload.email !== undefined) payload.email = rawPayload.email;
+          if (col === 'funcao' && rawPayload.funcao !== undefined) payload.funcao = rawPayload.funcao;
+          if (col === 'role' && rawPayload.funcao !== undefined) payload.role = rawPayload.funcao;
+          if (col === 'telefone' && rawPayload.telefone !== undefined) payload.telefone = rawPayload.telefone;
+          if (col === 'phone' && rawPayload.telefone !== undefined) payload.phone = rawPayload.telefone;
+          if (col === 'ativo' && rawPayload.ativo !== undefined) payload.ativo = rawPayload.ativo;
+          if (col === 'active' && rawPayload.active !== undefined) payload.active = rawPayload.active;
+          if (col === 'condominio_id') payload.condominio_id = selectedCondoUuid;
+          if (col === 'condominio' && rawPayload.condominio !== undefined) payload.condominio = rawPayload.condominio;
+        }
+        return payload;
+      };
+
       // 1. Detect deletes
       const deleted = porteiros.filter(p => p.id && !newPorteirosList.some(np => np.id === p.id));
       for (const p of deleted) {
@@ -2829,53 +2911,113 @@ export default function App() {
             continue;
           }
 
-          // It's a new user!
-          console.log('Criando novo usuário no Supabase:', np.email);
-          // Register in Supabase Auth first
-          const { data: signUpData, error: signUpError } = await tempSupabase.auth.signUp({
-            email: np.email || '',
-            password: np.pin || '123456' // password as password
-          });
+          // 1. Verificar se o e-mail já existe na tabela de perfis (Supabase) antes de tentar criar no Auth
+          console.log('Verificando se o e-mail já está cadastrado na tabela perfis no App.tsx...', np.email);
+          const { data: existingProfileByEmail, error: searchError } = await supabase
+            .from('perfis')
+            .select('id, email, nome')
+            .eq('email', np.email || '')
+            .maybeSingle();
 
-          if (signUpError) {
-            console.error('Erro ao cadastrar usuário no Supabase Auth:', signUpError.message);
-            toast.error('ERRO SUPABASE AUTH', {
-              description: `Não foi possível criar as credenciais: ${signUpError.message}`
+          if (searchError) {
+            console.error('Erro ao verificar e-mail existente na tabela perfis no App.tsx:', searchError);
+          }
+
+          if (existingProfileByEmail) {
+            console.warn('O e-mail já existe na tabela perfis no App.tsx:', existingProfileByEmail);
+            toast.error('USUÁRIO JÁ CADASTRADO', {
+              description: `Este e-mail (${np.email}) já pertence ao perfil "${existingProfileByEmail.nome}".`
             });
             continue;
           }
 
-          if (signUpData.user) {
-            let selectedCondoId = np.condominio_id || '';
-            if (!selectedCondoId && np.condoName) {
-              const matched = condominios.find(c => c.nome.toLowerCase() === np.condoName.toLowerCase());
-              if (matched) {
-                selectedCondoId = matched.id;
-              }
+          // It's a new user!
+          console.log('Criando novo usuário no Supabase:', np.email);
+          // Register in Supabase Auth first
+          const signUpResult = await tempSupabase.auth.signUp({
+            email: np.email || '',
+            password: np.pin || '123456' // password as password
+          });
+
+          const { data: signUpData, error: signUpError } = signUpResult;
+
+          console.log('Retorno de auth.signUp() no App.tsx:', {
+            hasData: !!signUpData,
+            hasUser: !!signUpData?.user,
+            userId: signUpData?.user?.id || null,
+            error: signUpError ? {
+              message: signUpError.message,
+              status: signUpError.status,
+              name: signUpError.name
+            } : null
+          });
+
+          if (signUpError) {
+            console.error('Erro ao cadastrar usuário no Supabase Auth no App.tsx:', signUpError.message);
+            let userFriendlyMessage = `Não foi possível criar as credenciais: ${signUpError.message}`;
+            if (signUpError.message?.toLowerCase().includes('rate limit') || signUpError.status === 429) {
+              userFriendlyMessage = 'O cadastro não pôde ser realizado porque o Supabase bloqueou temporariamente novas criações de usuários devido ao limite de taxa (rate limit). Por favor, aguarde alguns minutos e tente novamente.';
             }
-            if (!selectedCondoId && condominios.length > 0) {
-              selectedCondoId = condominios[0].id;
+            toast.error('ERRO SUPABASE AUTH', {
+              description: userFriendlyMessage
+            });
+            continue;
+          }
+
+          if (signUpData.user && signUpData.user.id) {
+            const userId = signUpData.user.id;
+            console.log('user.id recebido com sucesso do Auth no App.tsx:', userId);
+
+            // Validate and resolve condo ID and Name
+            let resolvedCondoInfo;
+            try {
+              resolvedCondoInfo = validateAndResolveCondo(np.condominio_id, np.condoName);
+            } catch (err: any) {
+              console.error('Erro ao resolver condomínio para insert no App.tsx:', err.message);
+              continue;
             }
 
-            const insertPayload = {
-              id: signUpData.user.id,
+            // Logs as requested in requirement 3
+            console.log('=== LOGS DE VALIDAÇÃO DE CONDOMÍNIO (App.tsx - Criação) ===');
+            console.log('Condomínio selecionado (nome):', resolvedCondoInfo.nome);
+            console.log('UUID correspondente:', resolvedCondoInfo.id);
+
+            const rawInsertPayload = {
+              id: userId,
               nome: np.name,
               email: np.email,
               telefone: np.phone || '',
               funcao: funcaoDb,
-              active: true,
-              condominio_id: selectedCondoId || null
+              ativo: true,
+              active: true, // as requested: "active: true" and "ativo: true"
+              condominio_id: resolvedCondoInfo.id,
+              condominio: resolvedCondoInfo.nome
             };
+
+            const insertPayload = buildFilteredPayloadForSync(rawInsertPayload, resolvedCondoInfo.id);
+
+            // Logs as requested in requirement 3
+            console.log('Objeto completo enviado para o insert da tabela perfis (App.tsx):', JSON.stringify(insertPayload, null, 2));
 
             const { error: profileError } = await supabase
               .from('perfis')
               .insert(insertPayload);
 
             if (profileError) {
-              console.error('Erro crítico ao criar perfil na tabela perfis:', profileError.message);
+              console.error('Erro crítico ao criar perfil na tabela perfis no App.tsx:', {
+                userId,
+                insertPayload,
+                errorMessage: profileError.message,
+                errorDetails: profileError
+              });
+              toast.error('ERRO CRÍTICO BANCO DE DADOS', {
+                description: `O usuário foi criado no Auth, mas seu perfil não pôde ser salvo na tabela 'perfis': ${profileError.message}`
+              });
             } else {
-              console.log('Perfil criado com sucesso na tabela perfis.');
+              console.log('Perfil criado com sucesso na tabela perfis no App.tsx.');
             }
+          } else {
+            console.error('Nenhum usuário ou ID de usuário retornado pelo Auth no App.tsx:', signUpData);
           }
         } else {
           // Check if changed
@@ -2894,28 +3036,38 @@ export default function App() {
             }
             console.log('Atualizando perfil no Supabase:', np.id);
 
-            let selectedCondoId = np.condominio_id || '';
-            if (!selectedCondoId && np.condoName) {
-              const matched = condominios.find(c => c.nome.toLowerCase() === np.condoName.toLowerCase());
-              if (matched) {
-                selectedCondoId = matched.id;
-              }
-            }
-            if (!selectedCondoId && condominios.length > 0) {
-              selectedCondoId = condominios[0].id;
+            // Validate and resolve condo ID and Name
+            let resolvedCondoInfo;
+            try {
+              resolvedCondoInfo = validateAndResolveCondo(np.condominio_id, np.condoName);
+            } catch (err: any) {
+              console.error('Erro ao resolver condomínio para update no App.tsx:', err.message);
+              continue;
             }
 
-            const updatePayload: any = {
+            // Logs as requested in requirement 3
+            console.log('=== LOGS DE VALIDAÇÃO DE CONDOMÍNIO (App.tsx - Update) ===');
+            console.log('Condomínio selecionado (nome):', resolvedCondoInfo.nome);
+            console.log('UUID correspondente:', resolvedCondoInfo.id);
+
+            const rawUpdatePayload: any = {
               nome: np.name,
               telefone: np.phone || '',
               funcao: funcaoDb,
+              ativo: np.active !== false,
               active: np.active !== false,
-              condominio_id: selectedCondoId || null
+              condominio_id: resolvedCondoInfo.id,
+              condominio: resolvedCondoInfo.nome
             };
 
             if (np.email) {
-              updatePayload.email = np.email;
+              rawUpdatePayload.email = np.email;
             }
+
+            const updatePayload = buildFilteredPayloadForSync(rawUpdatePayload, resolvedCondoInfo.id);
+
+            // Logs as requested in requirement 3
+            console.log('Objeto completo enviado para o update da tabela perfis (App.tsx):', JSON.stringify(updatePayload, null, 2));
 
             const { error: profileError } = await supabase
               .from('perfis')

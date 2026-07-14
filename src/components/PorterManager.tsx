@@ -289,20 +289,114 @@ export function PorterManager({
         funcaoDb = 'sindico';
       }
 
+      // 1. Fetch real condominios from database right before insert/update for strict validation
+      console.log('Buscando condomínios direto do banco para validação de UUID...');
+      const { data: dbCondominios, error: condosDbError } = await supabase
+        .from('condominios')
+        .select('id, nome');
+
+      if (condosDbError) {
+        console.error('Erro ao buscar condomínios para validação de UUID:', condosDbError);
+        throw new Error(`Não foi possível validar o condomínio no banco de dados: ${condosDbError.message}`);
+      }
+
+      if (!dbCondominios || dbCondominios.length === 0) {
+        throw new Error('A tabela de condomínios está vazia no banco de dados. Cadastre um condomínio primeiro.');
+      }
+
+      // Check if the selected porterCondo exists in dbCondominios
+      let finalCondoId = porterCondo;
+      let matchedCondo = dbCondominios.find(c => c.id === finalCondoId);
+
+      // If not matched, try finding by name (e.g. condoName or the matched name)
+      if (!matchedCondo && condoName) {
+        matchedCondo = dbCondominios.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
+        if (matchedCondo) {
+          finalCondoId = matchedCondo.id;
+        }
+      }
+
+      // If still not matched, use the first condominium in the database
+      if (!matchedCondo && dbCondominios.length > 0) {
+        matchedCondo = dbCondominios[0];
+        finalCondoId = matchedCondo.id;
+      }
+
+      if (!matchedCondo || !finalCondoId) {
+        throw new Error('Não foi possível associar um condomínio válido com UUID existente no banco de dados.');
+      }
+
+      // Ensure condominio_id is strictly a valid UUID, not a string name or empty
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(finalCondoId);
+      if (!isUuid) {
+        throw new Error(`O valor "${finalCondoId}" não é um UUID de condomínio válido. Deve ser exclusivamente o UUID de 'condominios'.`);
+      }
+
+      const selectedCondoName = matchedCondo.nome;
+      const selectedCondoUuid = matchedCondo.id;
+
+      // Logs as requested in requirement 3
+      console.log('=== LOGS DE VALIDAÇÃO DE CONDOMÍNIO (PorterManager) ===');
+      console.log('Condomínio selecionado (nome):', selectedCondoName);
+      console.log('UUID correspondente:', selectedCondoUuid);
+
+      // Map columns dynamically to avoid errors on extra/missing columns
+      const cols = await getProfileTableColumns();
+      console.log('PorterManager: Colunas reais detectadas em perfis para filtragem:', cols);
+
+      const buildFilteredPayload = (rawPayload: any) => {
+        if (!cols || cols.length === 0) {
+          const fallback: any = {
+            id: rawPayload.id,
+            nome: rawPayload.nome,
+            email: rawPayload.email,
+            telefone: rawPayload.telefone,
+            funcao: rawPayload.funcao,
+            condominio_id: selectedCondoUuid
+          };
+          if (rawPayload.ativo !== undefined) fallback.ativo = rawPayload.ativo;
+          if (rawPayload.active !== undefined) fallback.active = rawPayload.active;
+          return fallback;
+        }
+
+        const payload: any = {};
+        for (const col of cols) {
+          if (col === 'id' && rawPayload.id !== undefined) payload.id = rawPayload.id;
+          if (col === 'nome' && rawPayload.nome !== undefined) payload.nome = rawPayload.nome;
+          if (col === 'name' && rawPayload.nome !== undefined) payload.name = rawPayload.nome;
+          if (col === 'email' && rawPayload.email !== undefined) payload.email = rawPayload.email;
+          if (col === 'funcao' && rawPayload.funcao !== undefined) payload.funcao = rawPayload.funcao;
+          if (col === 'role' && rawPayload.funcao !== undefined) payload.role = rawPayload.funcao;
+          if (col === 'telefone' && rawPayload.telefone !== undefined) payload.telefone = rawPayload.telefone;
+          if (col === 'phone' && rawPayload.telefone !== undefined) payload.phone = rawPayload.telefone;
+          if (col === 'ativo' && rawPayload.ativo !== undefined) payload.ativo = rawPayload.ativo;
+          if (col === 'active' && rawPayload.active !== undefined) payload.active = rawPayload.active;
+          if (col === 'condominio_id') payload.condominio_id = selectedCondoUuid;
+          if (col === 'condominio' && rawPayload.condominio !== undefined) payload.condominio = rawPayload.condominio;
+        }
+        return payload;
+      };
+
       if (editingPorterId) {
         // --- EDITING EXISTING USER ---
-        const updatePayload: any = {
+        const rawUpdatePayload: any = {
           nome: trimmedName,
           telefone: phone.trim() || '',
           funcao: funcaoDb,
+          ativo: active !== false,
           active: active !== false,
-          condominio_id: porterCondo || null
+          condominio_id: selectedCondoUuid,
+          condominio: selectedCondoName
         };
 
-        // Send email only if we have it and editing is permitted
         if (trimmedEmail) {
-          updatePayload.email = trimmedEmail;
+          rawUpdatePayload.email = trimmedEmail;
         }
+
+        const updatePayload = buildFilteredPayload(rawUpdatePayload);
+
+        // Requirement 3: Log the complete object sent to the update
+        console.log('Objeto completo enviado para o update da tabela perfis (PorterManager):', JSON.stringify(updatePayload, null, 2));
 
         const { error: profileError } = await supabase
           .from('perfis')
@@ -313,9 +407,6 @@ export function PorterManager({
           throw new Error(`Erro ao atualizar perfil no banco de dados: ${profileError.message}`);
         }
 
-        const matchedCondo = condominios.find(c => c.id === porterCondo);
-        const resolvedCondoName = matchedCondo ? matchedCondo.nome : condoName;
-
         const updated = porteiros.map(p => {
           if (p.id === editingPorterId) {
             return {
@@ -324,11 +415,11 @@ export function PorterManager({
               pin: trimmedPin,
               role,
               active,
-              condoName: resolvedCondoName,
+              condoName: selectedCondoName,
               notes: notes.trim() || undefined,
               phone: phone.trim() || undefined,
               email: trimmedEmail,
-              condominio_id: porterCondo
+              condominio_id: selectedCondoUuid
             };
           }
           return p;
@@ -358,33 +449,79 @@ export function PorterManager({
         // --- CREATING NEW USER ---
         let authUserId = '';
 
+        // 1. Verificar se o e-mail já existe na tabela de perfis (Supabase) antes de tentar criar no Auth
+        console.log('Verificando se o e-mail já está cadastrado na tabela perfis no PorterManager...', trimmedEmail);
+        const { data: existingProfileByEmail, error: searchError } = await supabase
+          .from('perfis')
+          .select('id, email, nome')
+          .eq('email', trimmedEmail)
+          .maybeSingle();
+
+        if (searchError) {
+          console.error('Erro ao verificar e-mail existente na tabela perfis:', searchError);
+        }
+
+        if (existingProfileByEmail) {
+          console.warn('O e-mail já existe na tabela perfis no PorterManager:', existingProfileByEmail);
+          throw new Error(`Este e-mail (${trimmedEmail}) já está cadastrado no sistema para o usuário "${existingProfileByEmail.nome}".`);
+        }
+
         // Register in Supabase Auth directly using tempSupabase client
-        const { data: signUpData, error: signUpError } = await tempSupabase.auth.signUp({
+        console.log('Iniciando fluxo de criação de usuário no Supabase Auth para o email:', trimmedEmail);
+        const signUpResult = await tempSupabase.auth.signUp({
           email: trimmedEmail,
           password: trimmedPin
         });
 
+        const { data: signUpData, error: signUpError } = signUpResult;
+
+        console.log('Retorno de auth.signUp() no PorterManager:', {
+          hasData: !!signUpData,
+          hasUser: !!signUpData?.user,
+          userId: signUpData?.user?.id || null,
+          error: signUpError ? {
+            message: signUpError.message,
+            status: signUpError.status,
+            name: signUpError.name
+          } : null
+        });
+
         if (signUpError) {
-          throw new Error(`Erro ao cadastrar usuário no Supabase Auth: ${signUpError.message}`);
+          console.error('Erro retornado pelo Supabase Auth.signUp():', signUpError);
+          let userFriendlyMessage = `Erro ao cadastrar usuário no Supabase Auth: ${signUpError.message}`;
+          
+          if (signUpError.message?.toLowerCase().includes('rate limit') || signUpError.status === 429) {
+            userFriendlyMessage = 'O cadastro não pôde ser realizado porque o Supabase bloqueou temporariamente novas criações de usuários devido ao limite de taxa (rate limit). Por favor, aguarde alguns minutos e tente novamente.';
+          }
+          
+          throw new Error(userFriendlyMessage);
         }
 
-        if (!signUpData.user) {
-          throw new Error('Falha ao obter dados do usuário do Supabase Auth.');
+        if (!signUpData.user || !signUpData.user.id) {
+          console.error('Nenhum usuário ou ID de usuário retornado pelo Auth no PorterManager:', signUpData);
+          throw new Error('Falha ao obter o ID do usuário do Supabase Auth. A criação do perfil não será realizada para evitar inconsistências no banco de dados.');
         }
 
         authUserId = signUpData.user.id;
+        console.log('user.id recebido com sucesso do Auth no PorterManager:', authUserId);
 
         // 2. Insert the profile in the perfis table using the registered user's ID
-        console.log("CONDÔMINIO SELECIONADO:", porterCondo);
-        const insertPayload = {
+        const rawInsertPayload = {
           id: authUserId,
           nome: trimmedName,
           email: trimmedEmail,
           telefone: phone.trim() || '',
           funcao: funcaoDb,
-          active: true, // as requested: "active: true"
-          condominio_id: porterCondo || null
+          ativo: true,
+          active: true, // as requested: "active: true" and "ativo: true"
+          condominio_id: selectedCondoUuid,
+          condominio: selectedCondoName
         };
+
+        const insertPayload = buildFilteredPayload(rawInsertPayload);
+
+        // Requirement 3: Log the complete object sent to the insert of perfis table
+        console.log('Objeto completo enviado para o insert da tabela perfis (PorterManager):', JSON.stringify(insertPayload, null, 2));
 
         const { error: profileError } = await supabase
           .from('perfis')
@@ -397,11 +534,10 @@ export function PorterManager({
             errorMessage: profileError.message,
             errorDetails: profileError
           });
-          throw new Error(`O usuário foi criado no Supabase Authentication (Auth), mas a criação de seu perfil associado na tabela 'perfis' não pôde ser concluída: ${profileError.message}`);
+          throw new Error(`O usuário foi criado no Supabase Authentication (Auth) com ID ${authUserId}, mas a criação de seu perfil associado na tabela 'perfis' não pôde ser concluída: ${profileError.message}`);
         }
 
-        const matchedCondo = condominios.find(c => c.id === porterCondo);
-        const resolvedCondoName = matchedCondo ? matchedCondo.nome : condoName;
+        console.log('Perfil associado criado com sucesso na tabela perfis para o usuário:', authUserId);
 
         // 3. Add to local list and notify parent with the real auth ID
         const newPorter: Porteiro = {
@@ -410,11 +546,11 @@ export function PorterManager({
           pin: trimmedPin,
           role,
           active: true,
-          condoName: resolvedCondoName,
+          condoName: selectedCondoName,
           notes: notes.trim() || undefined,
           phone: phone.trim() || undefined,
           email: trimmedEmail,
-          condominio_id: porterCondo
+          condominio_id: selectedCondoUuid
         };
 
         onUpdatePorteiros([...porteiros, newPorter]);
@@ -424,7 +560,7 @@ export function PorterManager({
 
         setSaveSuccess('Usuário cadastrado com sucesso!');
         toast.success('Usuário cadastrado com sucesso!', {
-          description: `${trimmedName} agora tem acesso ao condomínio ${resolvedCondoName}.`
+          description: `${trimmedName} agora tem acesso ao condomínio ${selectedCondoName}.`
         });
 
         // Clear input fields but keep success state visible
