@@ -103,6 +103,7 @@ export function PreAuthorizationManager({
         name: data.name!,
         document: data.document,
         plate: data.plate,
+        relationship: data.relationship,
         observation: data.observation,
         validity: data.validity!,
         isManualValidity: true,
@@ -421,6 +422,7 @@ export function PreAuthForm({ initialData, onClose, onSave }: PreAuthFormProps) 
   const [formData, setFormData] = useState({
     unit: initialData?.unit || '',
     name: initialData?.name || '',
+    relationship: initialData?.relationship || '',
     document: initialData?.document || '',
     type: defaultType,
     deliverySubtype: initialData?.deliverySubtype || (defaultType === 'delivery' ? 'motoboy' : '' as any as DeliverySubtype),
@@ -456,54 +458,59 @@ export function PreAuthForm({ initialData, onClose, onSave }: PreAuthFormProps) 
 
       <div className="flex-1 overflow-y-auto p-6">
         <form id="preauth-form" onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Casa / Apto</label>
+          {/* Primeira linha: CASA | NOME COMPLETO / VÍNCULO | CPF/RG */}
+          <div className="grid grid-cols-12 gap-3 items-start">
+            <div className="col-span-2 space-y-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Casa/Apto</label>
               <input
                 required
                 type="text"
-                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold"
+                placeholder="Ex: 102"
+                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus-within:border-blue-500 outline-none transition-all font-bold text-sm"
                 value={formData.unit}
                 onChange={e => setFormData({ ...formData, unit: e.target.value })}
               />
             </div>
-            <div className="space-y-1">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Validade</label>
+            
+            <div className="col-span-7 space-y-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome Completo / Vínculo</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  placeholder="Nome Completo (Opcional)"
+                  className="flex-[2] min-w-0 px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus-within:border-blue-500 outline-none transition-all font-bold text-sm"
+                  value={formData.name}
+                  onChange={e => setFormData({ ...formData, name: e.target.value })}
+                />
+                <span className="text-slate-300 font-bold shrink-0">/</span>
+                <input
+                  type="text"
+                  placeholder="Vínculo (Ex: Mãe, Diarista...)"
+                  className="flex-[1] min-w-0 px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus-within:border-blue-500 outline-none transition-all font-bold text-sm"
+                  value={formData.relationship}
+                  onChange={e => setFormData({ ...formData, relationship: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="col-span-3 space-y-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">CPF / RG</label>
               <input
-                required
-                type="datetime-local"
-                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold"
-                value={formData.validity}
-                onChange={e => setFormData({ ...formData, validity: e.target.value })}
+                type="text"
+                placeholder="CPF ou RG"
+                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus-within:border-blue-500 outline-none transition-all font-bold text-sm"
+                value={formData.document}
+                onChange={e => setFormData({ ...formData, document: e.target.value })}
               />
             </div>
           </div>
 
-          <div className="space-y-1">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome Completo (Opcional)</label>
-            <input
-              type="text"
-              className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold"
-              value={formData.name}
-              onChange={e => setFormData({ ...formData, name: e.target.value })}
-            />
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">RG / CPF</label>
-            <input
-              type="text"
-              className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold"
-              value={formData.document}
-              onChange={e => setFormData({ ...formData, document: e.target.value })}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* Segunda linha: TIPO PRINCIPAL | VEÍCULO / PLACA */}
+          <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tipo Principal</label>
               <select
-                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold appearance-none"
+                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus-within:border-blue-500 outline-none transition-all font-bold appearance-none text-sm"
                 value={formData.type}
                 onChange={e => setFormData({ ...formData, type: e.target.value as AccessType })}
               >
@@ -516,11 +523,24 @@ export function PreAuthForm({ initialData, onClose, onSave }: PreAuthFormProps) 
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Veículo / Placa</label>
               <input
                 type="text"
-                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold uppercase"
+                placeholder="Opcional"
+                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus-within:border-blue-500 outline-none transition-all font-bold uppercase text-sm"
                 value={formData.plate}
                 onChange={e => setFormData({ ...formData, plate: e.target.value })}
               />
             </div>
+          </div>
+
+          {/* Validade do Acesso */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Validade</label>
+            <input
+              required
+              type="datetime-local"
+              className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus-within:border-blue-500 outline-none transition-all font-bold text-sm"
+              value={formData.validity}
+              onChange={e => setFormData({ ...formData, validity: e.target.value })}
+            />
           </div>
 
           {formData.type === 'delivery' && (
@@ -528,7 +548,7 @@ export function PreAuthForm({ initialData, onClose, onSave }: PreAuthFormProps) 
               <div className="space-y-1">
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Subtipo de Entrega</label>
                 <select
-                  className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold appearance-none"
+                  className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus-within:border-blue-500 outline-none transition-all font-bold appearance-none text-sm"
                   value={formData.deliverySubtype}
                   onChange={e => setFormData({ ...formData, deliverySubtype: e.target.value as DeliverySubtype })}
                 >
@@ -544,7 +564,7 @@ export function PreAuthForm({ initialData, onClose, onSave }: PreAuthFormProps) 
                 <input
                   type="text"
                   placeholder="Ex: iFood, Rappi"
-                  className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold"
+                  className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus-within:border-blue-500 outline-none transition-all font-bold text-sm"
                   value={formData.company}
                   onChange={e => setFormData({ ...formData, company: e.target.value })}
                 />
@@ -555,7 +575,7 @@ export function PreAuthForm({ initialData, onClose, onSave }: PreAuthFormProps) 
           <div className="space-y-1">
             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Observação</label>
             <textarea
-              className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold min-h-[80px]"
+              className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus-within:border-blue-500 outline-none transition-all font-bold min-h-[80px] text-sm"
               value={formData.observation}
               onChange={e => setFormData({ ...formData, observation: e.target.value })}
             />
@@ -567,14 +587,14 @@ export function PreAuthForm({ initialData, onClose, onSave }: PreAuthFormProps) 
         <button
           type="button"
           onClick={onClose}
-          className="flex-1 py-3 bg-red-600 text-white font-black rounded-xl hover:bg-red-700 transition-all border-b-4 border-red-800 shadow-md shadow-red-100"
+          className="flex-1 py-3 bg-red-600 text-white font-black rounded-xl hover:bg-red-700 transition-all border-b-4 border-red-800 shadow-md shadow-red-100 text-xs tracking-wider"
         >
           CANCELAR
         </button>
         <button
           type="submit"
           form="preauth-form"
-          className="flex-[2] py-3 bg-blue-600 text-white font-black rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95"
+          className="flex-[2] py-3 bg-blue-600 text-white font-black rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 text-xs tracking-wider"
         >
           SALVAR AUTORIZAÇÃO
         </button>

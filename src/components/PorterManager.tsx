@@ -86,6 +86,13 @@ export function PorterManager({
             try {
               const parsed = JSON.parse(saved);
               if (parsed && parsed.length > 0) {
+                console.log('=== LOGS DE CARREGAMENTO DE CONDOMÍNIOS (PorterManager.tsx - LocalStorage Fallback) ===');
+                console.log('Quantidade de condomínios retornados:', parsed.length);
+                console.log('Objeto completo retornado pela consulta (Cache):', JSON.stringify(parsed, null, 2));
+                parsed.forEach((c, idx) => {
+                  console.log(`Condomínio [${idx}]: Nome = "${c.nome}", UUID = "${c.id}"`);
+                });
+
                 if (isMounted) {
                   setCondominios(parsed);
                   const matched = parsed.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
@@ -98,11 +105,25 @@ export function PorterManager({
           
           // No cached data, use BELLE VILLE hardcoded fallback
           const fallback = [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
+          console.log('=== LOGS DE CARREGAMENTO DE CONDOMÍNIOS (PorterManager.tsx - Error Fallback) ===');
+          console.log('Quantidade de condomínios retornados:', fallback.length);
+          console.log('Objeto completo retornado pela consulta (Fallback):', JSON.stringify(fallback, null, 2));
+          fallback.forEach((c, idx) => {
+            console.log(`Condomínio [${idx}]: Nome = "${c.nome}", UUID = "${c.id}"`);
+          });
+
           if (isMounted) {
             setCondominios(fallback);
             setPorterCondo(fallback[0].id);
           }
         } else if (data && data.length > 0) {
+          console.log('=== LOGS DE CARREGAMENTO DE CONDOMÍNIOS (PorterManager.tsx - Supabase) ===');
+          console.log('Quantidade de condomínios retornados:', data.length);
+          console.log('Objeto completo retornado pela consulta:', JSON.stringify(data, null, 2));
+          data.forEach((c, idx) => {
+            console.log(`Condomínio [${idx}]: Nome = "${c.nome}", UUID = "${c.id}"`);
+          });
+
           if (isMounted) {
             setCondominios(data);
             localStorage.setItem('portaria_condominios', JSON.stringify(data));
@@ -117,6 +138,13 @@ export function PorterManager({
           // If query returned no rows, use BELLE VILLE hardcoded fallback as unique option
           console.log('Tabela condominios está vazia. Usando BELLE VILLE como opção padrão.');
           const fallback = [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
+          console.log('=== LOGS DE CARREGAMENTO DE CONDOMÍNIOS (PorterManager.tsx - Empty Fallback) ===');
+          console.log('Quantidade de condomínios retornados:', fallback.length);
+          console.log('Objeto completo retornado pela consulta (Fallback):', JSON.stringify(fallback, null, 2));
+          fallback.forEach((c, idx) => {
+            console.log(`Condomínio [${idx}]: Nome = "${c.nome}", UUID = "${c.id}"`);
+          });
+
           if (isMounted) {
             setCondominios(fallback);
             setPorterCondo(fallback[0].id);
@@ -127,6 +155,13 @@ export function PorterManager({
         if (isMounted) {
           setCondoError(err.message || 'Erro inesperado de rede');
           const fallback = [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
+          console.log('=== LOGS DE CARREGAMENTO DE CONDOMÍNIOS (PorterManager.tsx - Catch Fallback) ===');
+          console.log('Quantidade de condomínios retornados:', fallback.length);
+          console.log('Objeto completo retornado pela consulta (Fallback):', JSON.stringify(fallback, null, 2));
+          fallback.forEach((c, idx) => {
+            console.log(`Condomínio [${idx}]: Nome = "${c.nome}", UUID = "${c.id}"`);
+          });
+
           setCondominios(fallback);
           setPorterCondo(fallback[0].id);
         }
@@ -289,51 +324,42 @@ export function PorterManager({
         funcaoDb = 'sindico';
       }
 
-      // 1. Fetch real condominios from database right before insert/update for strict validation
-      console.log('Buscando condomínios direto do banco para validação de UUID...');
-      const { data: dbCondominios, error: condosDbError } = await supabase
-        .from('condominios')
-        .select('id, nome');
+      // Use the local state condominios directly as requested
+      const activeCondos = condominios && condominios.length > 0
+        ? condominios
+        : [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
 
-      if (condosDbError) {
-        console.error('Erro ao buscar condomínios para validação de UUID:', condosDbError);
-        throw new Error(`Não foi possível validar o condomínio no banco de dados: ${condosDbError.message}`);
-      }
-
-      if (!dbCondominios || dbCondominios.length === 0) {
-        throw new Error('A tabela de condomínios está vazia no banco de dados. Cadastre um condomínio primeiro.');
-      }
-
-      // Check if the selected porterCondo exists in dbCondominios
       let finalCondoId = porterCondo;
-      let matchedCondo = dbCondominios.find(c => c.id === finalCondoId);
+      let matchedCondo = activeCondos.find(c => c.id === finalCondoId);
 
       // If not matched, try finding by name (e.g. condoName or the matched name)
       if (!matchedCondo && condoName) {
-        matchedCondo = dbCondominios.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
+        matchedCondo = activeCondos.find(c => c.nome.toLowerCase() === condoName.toLowerCase());
         if (matchedCondo) {
           finalCondoId = matchedCondo.id;
         }
       }
 
-      // If still not matched, use the first condominium in the database
-      if (!matchedCondo && dbCondominios.length > 0) {
-        matchedCondo = dbCondominios[0];
+      // If still not matched, use the first condominium in the local state
+      if (!matchedCondo && activeCondos.length > 0) {
+        matchedCondo = activeCondos[0];
         finalCondoId = matchedCondo.id;
       }
 
-      if (!matchedCondo || !finalCondoId) {
-        throw new Error('Não foi possível associar um condomínio válido com UUID existente no banco de dados.');
-      }
-
-      // Ensure condominio_id is strictly a valid UUID, not a string name or empty
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(finalCondoId);
-      if (!isUuid) {
-        throw new Error(`O valor "${finalCondoId}" não é um UUID de condomínio válido. Deve ser exclusivamente o UUID de 'condominios'.`);
+      // Fallback to BELLE VILLE if still not matched
+      if (!matchedCondo) {
+        matchedCondo = { id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' };
+        finalCondoId = matchedCondo.id;
       }
 
       const selectedCondoName = matchedCondo.nome;
       const selectedCondoUuid = matchedCondo.id;
+
+      // Ensure condominio_id is strictly a valid UUID, not a string name or empty
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(selectedCondoUuid);
+      if (!isUuid) {
+        throw new Error(`O valor "${selectedCondoUuid}" não é um UUID de condomínio válido. Deve ser exclusivamente o UUID de 'condominios'.`);
+      }
 
       // Logs as requested in requirement 3
       console.log('=== LOGS DE VALIDAÇÃO DE CONDOMÍNIO (PorterManager) ===');
@@ -395,8 +421,27 @@ export function PorterManager({
 
         const updatePayload = buildFilteredPayload(rawUpdatePayload);
 
-        // Requirement 3: Log the complete object sent to the update
-        console.log('Objeto completo enviado para o update da tabela perfis (PorterManager):', JSON.stringify(updatePayload, null, 2));
+        // Required Logging before update on perfis
+        console.log('=== LOGS EXIGIDOS ANTES DO UPDATE NA TABELA PERFIS ===');
+        console.log('1. Objeto completo enviado ao update:', JSON.stringify(updatePayload, null, 2));
+        console.log('2. Valor exato de condominio_id:', updatePayload.condominio_id);
+        console.log('3. Tipo do valor (string, object, undefined, null):', typeof updatePayload.condominio_id);
+        
+        const dbBelleVilleUpdate = condominios.find(c => c.nome.toUpperCase() === 'BELLE VILLE');
+        const dbBelleVilleUuidUpdate = dbBelleVilleUpdate ? dbBelleVilleUpdate.id : null;
+        console.log('4. UUID existente na tabela condominios correspondente ao BELLE VILLE:', dbBelleVilleUuidUpdate);
+        
+        const comparisonResultUpdate = updatePayload.condominio_id === dbBelleVilleUuidUpdate;
+        console.log('5. Resultado da comparação entre o UUID enviado e o UUID existente:', comparisonResultUpdate);
+        
+        if (!comparisonResultUpdate) {
+          console.log('=== DETALHES DA DIFERENÇA (UPDATE) ===');
+          console.log(`Diferença detectada! O valor enviado para condominio_id é "${updatePayload.condominio_id}", mas o UUID correspondente ao BELLE VILLE existente na tabela de condomínios retornada pelo banco é "${dbBelleVilleUuidUpdate}".`);
+          if (dbBelleVilleUuidUpdate === null) {
+            console.log('Causa raiz provável: A tabela "condominios" no banco de dados está completamente vazia (0 linhas). Portanto, não existe nenhum UUID correspondente a "BELLE VILLE" registrado em "condominios", violando a chave estrangeira (foreign key) ao inserir/atualizar perfis.');
+          }
+        }
+        console.log('======================================================');
 
         const { error: profileError } = await supabase
           .from('perfis')
@@ -520,8 +565,27 @@ export function PorterManager({
 
         const insertPayload = buildFilteredPayload(rawInsertPayload);
 
-        // Requirement 3: Log the complete object sent to the insert of perfis table
-        console.log('Objeto completo enviado para o insert da tabela perfis (PorterManager):', JSON.stringify(insertPayload, null, 2));
+        // Required Logging before insert on perfis
+        console.log('=== LOGS EXIGIDOS ANTES DO INSERT NA TABELA PERFIS ===');
+        console.log('1. Objeto completo enviado ao insert:', JSON.stringify(insertPayload, null, 2));
+        console.log('2. Valor exato de condominio_id:', insertPayload.condominio_id);
+        console.log('3. Tipo do valor (string, object, undefined, null):', typeof insertPayload.condominio_id);
+        
+        const dbBelleVilleInsert = condominios.find(c => c.nome.toUpperCase() === 'BELLE VILLE');
+        const dbBelleVilleUuidInsert = dbBelleVilleInsert ? dbBelleVilleInsert.id : null;
+        console.log('4. UUID existente na tabela condominios correspondente ao BELLE VILLE:', dbBelleVilleUuidInsert);
+        
+        const comparisonResultInsert = insertPayload.condominio_id === dbBelleVilleUuidInsert;
+        console.log('5. Resultado da comparação entre o UUID enviado e o UUID existente:', comparisonResultInsert);
+        
+        if (!comparisonResultInsert) {
+          console.log('=== DETALHES DA DIFERENÇA (INSERT) ===');
+          console.log(`Diferença detectada! O valor enviado para condominio_id é "${insertPayload.condominio_id}", mas o UUID correspondente ao BELLE VILLE existente na tabela de condomínios retornada pelo banco é "${dbBelleVilleUuidInsert}".`);
+          if (dbBelleVilleUuidInsert === null) {
+            console.log('Causa raiz provável: A tabela "condominios" no banco de dados está completamente vazia (0 linhas). Portanto, não existe nenhum UUID correspondente a "BELLE VILLE" registrado em "condominios", violando a chave estrangeira (foreign key) ao inserir/atualizar perfis.');
+          }
+        }
+        console.log('======================================================');
 
         const { error: profileError } = await supabase
           .from('perfis')

@@ -5,7 +5,7 @@ import { OCRResult } from '../types';
 import { X, Check, Car, User, Home, FileText, Camera, Bike, ChevronDown, Shield, ShieldAlert, Zap, Calendar, Clock, MessageSquare, Package, Wrench, RefreshCw, Eye, Bell, Phone } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
-import { toast } from '../lib/toast';
+import { toast, ToastMessage, toastStore } from '../lib/toast';
 import { format } from 'date-fns';
 import { getCorrectedType, verifyContentForCrossModality } from '../lib/classificationUtils';
 import { supabase } from '../lib/supabase';
@@ -408,6 +408,15 @@ export function AccessForm({
     morador_solicitante_nome: (initialData as any)?.morador_solicitante_nome || undefined,
   });
 
+  const [nameValidationError, setNameValidationError] = useState<string | null>(null);
+  const [formToasts, setFormToasts] = useState<ToastMessage[]>([]);
+
+  useEffect(() => {
+    return toastStore.subscribe((messages) => {
+      setFormToasts(messages);
+    });
+  }, []);
+
   const blockedProfile = useMemo(() => {
     return getBlockedMatch(formData, permanentProfiles);
   }, [formData, permanentProfiles]);
@@ -467,9 +476,25 @@ export function AccessForm({
   // Requesting resident matching states and hook
   const [activeResidentsForUnit, setActiveResidentsForUnit] = useState<any[]>([]);
   const [selectedResidentIndex, setSelectedResidentIndex] = useState<number>(0);
-  const [residentSelectionConfirmed, setResidentSelectionConfirmed] = useState<boolean>(false);
+  const [residentSelectionConfirmed, setResidentSelectionConfirmed] = useState<boolean>(() => {
+    const initResName = (initialData as any)?.morador_solicitante_nome || (initialData as any)?.residentName;
+    return !!initResName;
+  });
   const [isManualResident, setIsManualResident] = useState<boolean>(false);
   const [isLoadingResidents, setIsLoadingResidents] = useState<boolean>(false);
+
+  // Keep refs synchronized to access freshest state values inside debounced effects
+  const formDataRef = useRef(formData);
+  useEffect(() => {
+    formDataRef.current = formData;
+  }, [formData]);
+
+  const residentSelectionConfirmedRef = useRef(residentSelectionConfirmed);
+  useEffect(() => {
+    residentSelectionConfirmedRef.current = residentSelectionConfirmed;
+  }, [residentSelectionConfirmed]);
+
+  const lastProcessedUnitRef = useRef<string>(initialData?.destination || '');
 
   const selecionarMorador = (res: any, shouldFocus = true) => {
     console.log('[Diagnostic] selecionarMorador chamado:', res, 'shouldFocus:', shouldFocus);
@@ -501,11 +526,26 @@ export function AccessForm({
         morador_solicitante_id: undefined,
         morador_solicitante_nome: undefined
       }));
+      lastProcessedUnitRef.current = '';
       return;
     }
 
     // Normalizing the input (removing "CASA", "APTO", "APARTAMENTO", "AP", spaces, etc.)
     const normalizedInput = cleanVal.replace(/^(CASA|APTO|APARTAMENTO|AP)\s*/, '').trim();
+
+    let unitChanged = false;
+    if (cleanVal !== lastProcessedUnitRef.current) {
+      unitChanged = true;
+      console.log(`[Diagnostic] Unidade mudou de "${lastProcessedUnitRef.current}" para "${cleanVal}". Resetando morador selecionado...`);
+      setResidentSelectionConfirmed(false);
+      setIsManualResident(false);
+      setFormData(prev => ({
+        ...prev,
+        morador_solicitante_id: undefined,
+        morador_solicitante_nome: undefined
+      }));
+      lastProcessedUnitRef.current = cleanVal;
+    }
 
     let isCurrent = true;
     setIsLoadingResidents(true);
@@ -613,6 +653,19 @@ export function AccessForm({
 
       setIsLoadingResidents(false);
 
+      // If we already have a confirmed resident name from initialData or previous selection/manual entry,
+      // do NOT let any asynchronous database response overwrite it!
+      const currentFormData = formDataRef.current;
+      const currentConfirmed = residentSelectionConfirmedRef.current;
+      const hasPreExistingResident = currentFormData.morador_solicitante_nome && 
+                                      currentFormData.morador_solicitante_nome !== 'Morador';
+
+      if (hasPreExistingResident && currentConfirmed) {
+        setActiveResidentsForUnit(residents);
+        setSelectedResidentIndex(0);
+        return;
+      }
+
       if (residents.length === 1) {
         setActiveResidentsForUnit(residents);
         setSelectedResidentIndex(0);
@@ -622,15 +675,20 @@ export function AccessForm({
         setSelectedResidentIndex(0);
         setResidentSelectionConfirmed(false);
         setIsManualResident(false);
+        setFormData(prev => ({
+          ...prev,
+          morador_solicitante_id: undefined,
+          morador_solicitante_nome: undefined
+        }));
       } else {
         setActiveResidentsForUnit([]);
         setSelectedResidentIndex(0);
-        setResidentSelectionConfirmed(true);
+        setResidentSelectionConfirmed(false);
         setIsManualResident(false);
         setFormData(prev => ({
           ...prev,
           morador_solicitante_id: undefined,
-          morador_solicitante_nome: 'Morador'
+          morador_solicitante_nome: undefined
         }));
       }
     }
@@ -690,7 +748,7 @@ export function AccessForm({
         {activeResidentsForUnit.length === 0 && !residentSelectionConfirmed && !isManualResident && (
           <div className="text-center py-2">
             <p className="text-[10px] font-black text-red-500 uppercase tracking-widest mb-2">
-              Nenhum morador encontrado para esta unidade.
+              Nenhum morador cadastrado para esta unidade.
             </p>
             <button
               type="button"
@@ -750,7 +808,7 @@ export function AccessForm({
               type="button"
               onClick={() => {
                 setResidentSelectionConfirmed(false);
-                setIsManualResident(true);
+                setIsManualResident(activeResidentsForUnit.length === 0);
                 setFormData(prev => ({ ...prev, morador_solicitante_nome: prev.morador_solicitante_nome || '' }));
               }}
               className="text-[9px] font-black text-blue-600 hover:text-blue-800 uppercase tracking-widest underline cursor-pointer"
@@ -793,6 +851,56 @@ export function AccessForm({
   const inputRefs = useRef<Record<string, any>>({});
   const submitButtonRef = useRef<HTMLButtonElement>(null);
 
+  const isCloseOrCancelElement = (el: HTMLElement | null): boolean => {
+    if (!el) return false;
+    const buttonEl = el.closest('button');
+    if (buttonEl) {
+      const ariaLabel = (buttonEl.getAttribute('aria-label') || '').toUpperCase();
+      const title = (buttonEl.getAttribute('title') || '').toUpperCase();
+      const text = (buttonEl.innerText || '').toUpperCase();
+      if (
+        ariaLabel.includes('FECHAR') ||
+        ariaLabel.includes('CANCELAR') ||
+        title.includes('VOLTAR') ||
+        text.includes('CANCELAR') ||
+        text.includes('FECHAR') ||
+        text.includes('VOLTAR')
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const handleNameBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    if (type === 'delivery' || type === 'visitor' || type === 'service') {
+      if (e.relatedTarget) {
+        const rt = e.relatedTarget as HTMLElement;
+        if (isCloseOrCancelElement(rt)) {
+          return;
+        }
+      }
+
+      const val = e.target.value.trim();
+      if (val) {
+        const parts = val.split(/\s+/).filter(Boolean);
+        if (parts.length < 2) {
+          const msg = 'ATENÇÃO: Digite também o sobrenome para prosseguir.';
+          toast.error(msg);
+          setNameValidationError(msg);
+          const target = e.target;
+          setTimeout(() => {
+            target.focus();
+          }, 50);
+        } else {
+          setNameValidationError(null);
+        }
+      } else {
+        setNameValidationError(null);
+      }
+    }
+  };
+
   // Custom color selection references and status
   const colorRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const prismaColorRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -807,6 +915,7 @@ export function AccessForm({
   const handleAutoSubmit = () => {
     if (blockedProfile) return;
     if (!destSearch.trim()) return;
+    if (!residentSelectionConfirmed || !formData.morador_solicitante_nome) return;
     if (type === 'uber') {
       onSubmit({
         ...formData,
@@ -848,6 +957,23 @@ export function AccessForm({
       });
       return;
     }
+
+    if (!residentSelectionConfirmed || !formData.morador_solicitante_nome) {
+      toast.error('Selecione o morador solicitante antes de criar a ação.');
+      return;
+    }
+
+    const nameVal = (formData.name || '').trim();
+    if (type === 'delivery' || type === 'visitor' || type === 'service') {
+      if (nameVal) {
+        const parts = nameVal.split(/\s+/).filter(Boolean);
+        if (parts.length < 2) {
+          toast.error('ATENÇÃO: Digite também o sobrenome para prosseguir.');
+          return;
+        }
+      }
+    }
+
     if (type === 'uber') {
       onSubmit({
         ...formData,
@@ -964,6 +1090,24 @@ export function AccessForm({
   };
 
   const advanceFromField = (currentField: string) => {
+    if (currentField === 'name' && (type === 'delivery' || type === 'visitor' || type === 'service')) {
+      const val = (formData.name || '').trim();
+      if (val) {
+        const parts = val.split(/\s+/).filter(Boolean);
+        if (parts.length < 2) {
+          const msg = 'ATENÇÃO: Digite também o sobrenome para prosseguir.';
+          toast.error(msg);
+          setNameValidationError(msg);
+          setTimeout(() => {
+            inputRefs.current.name?.focus();
+          }, 50);
+          return;
+        } else {
+          setNameValidationError(null);
+        }
+      }
+    }
+
     const sequence = getFocusableSequence();
     const currentIndex = sequence.indexOf(currentField);
     
@@ -1451,6 +1595,10 @@ export function AccessForm({
       if (existingPrint) {
         setOcrPreview(existingPrint);
       }
+      const initResName = (initialData as any).morador_solicitante_nome || (initialData as any).residentName;
+      if (initResName) {
+        setResidentSelectionConfirmed(true);
+      }
     } else if (type === 'uber') {
       resetUberOCR();
     }
@@ -1471,6 +1619,22 @@ export function AccessForm({
         description: 'A Unidade (Casa/Apto) é obrigatória.'
       });
       return;
+    }
+
+    if (!residentSelectionConfirmed || !formData.morador_solicitante_nome) {
+      toast.error('Selecione o morador solicitante antes de criar a ação.');
+      return;
+    }
+
+    const nameVal = (formData.name || '').trim();
+    if (type === 'delivery' || type === 'visitor' || type === 'service') {
+      if (nameVal) {
+        const parts = nameVal.split(/\s+/).filter(Boolean);
+        if (parts.length < 2) {
+          toast.error('ATENÇÃO: Digite também o sobrenome para prosseguir.');
+          return;
+        }
+      }
     }
     
     const typeLabel = type === 'delivery' ? 'entrega' : type === 'visitor' ? 'visita' : type === 'service' ? 'serviço' : 'corrida da Uber';
@@ -1788,12 +1952,22 @@ export function AccessForm({
       return;
     }
 
+    if (!residentSelectionConfirmed || !formData.morador_solicitante_nome) {
+      toast.error('Selecione o morador solicitante antes de criar a ação.');
+      return;
+    }
+
     // Modal-specific validations in strict accordance with the rules:
     if (type === 'delivery') {
       if (!nameVal) {
         toast.error('Preencha os dados obrigatórios antes de liberar.', {
           description: 'O campo NOME é obrigatório.'
         });
+        return;
+      }
+      const parts = nameVal.split(/\s+/).filter(Boolean);
+      if (parts.length < 2) {
+        toast.error('ATENÇÃO: Digite também o sobrenome para prosseguir.');
         return;
       }
       if (!docVal) {
@@ -1817,6 +1991,11 @@ export function AccessForm({
         });
         return;
       }
+      const parts = nameVal.split(/\s+/).filter(Boolean);
+      if (parts.length < 2) {
+        toast.error('ATENÇÃO: Digite também o sobrenome para prosseguir.');
+        return;
+      }
       if (!docVal) {
         toast.error('Preencha os dados obrigatórios antes de liberar.', {
           description: 'O campo CPF/RG é obrigatório.'
@@ -1836,6 +2015,11 @@ export function AccessForm({
         toast.error('Preencha os dados obrigatórios antes de liberar.', {
           description: 'O campo NOME é obrigatório.'
         });
+        return;
+      }
+      const parts = nameVal.split(/\s+/).filter(Boolean);
+      if (parts.length < 2) {
+        toast.error('ATENÇÃO: Digite também o sobrenome para prosseguir.');
         return;
       }
       if (!docVal) {
@@ -1917,16 +2101,16 @@ export function AccessForm({
   };
 
   const handleUseFrequent = (visitor: FrequentVisitor) => {
-    setFormData({
-      ...formData,
+    setFormData(prev => ({
+      ...prev,
       name: visitor.name,
       plate: visitor.plate || '',
       relationship: visitor.relationship || '',
-      deliverySubtype: visitor.deliverySubtype || formData.deliverySubtype,
+      deliverySubtype: visitor.deliverySubtype || prev.deliverySubtype,
       notes: visitor.observation || '',
       origin: 'visitante_frequente',
       ruleUsed: visitor.rule,
-    });
+    }));
     toast.info(`Dados de ${visitor.name} carregados!`, {
       description: `Regra: ${visitor.rule === 'SEMPRE_LIBERADO' ? 'Sempre Liberado' : 'Avisar Antes'}`
     });
@@ -2155,8 +2339,53 @@ export function AccessForm({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 20 }}
       onAnimationComplete={() => setTimeout(setActualFocus, 50)}
-      className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full overflow-hidden flex flex-col max-h-[90vh] md:max-h-[95vh] sm:max-h-[85vh]"
+      className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full overflow-hidden flex flex-col max-h-[90vh] md:max-h-[95vh] sm:max-h-[85vh] relative"
     >
+      {/* Floating toasts for modal context */}
+      <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[100] pointer-events-none flex flex-col gap-2 w-full max-w-sm px-4">
+        <AnimatePresence>
+          {formToasts.slice(0, 1).map((msg) => {
+            const upper = msg.message.toUpperCase();
+            let label = upper;
+            if (upper.includes('LIBERAÇÃO') || upper.includes('LIBERACAO')) {
+              label = '✓ LIBERAÇÃO AUTORIZADA';
+            } else if (upper.includes('CANCELAD')) {
+              label = '✓ AÇÃO CANCELADA';
+            } else if (upper.includes('ENTREGA') && (upper.includes('REGISTRAD') || upper.includes('LIBERAD'))) {
+              label = '✓ ENTREGA REGISTRADA';
+            } else if (upper.includes('VISITANTE') && (upper.includes('LIBERAD') || upper.includes('REGISTRAD'))) {
+              label = '✓ VISITANTE LIBERADO';
+            } else {
+              label = '✓ ' + upper;
+            }
+
+            const bgClass =
+              msg.type === 'success' ? 'bg-emerald-50 text-emerald-600 border-emerald-200/60' :
+              msg.type === 'error' ? 'bg-red-50 text-red-600 border-red-200/60 font-black animate-bounce' :
+              msg.type === 'warning' ? 'bg-amber-50 text-amber-600 border-amber-200/65 font-black' :
+              msg.type === 'info' ? 'bg-cyan-50 text-cyan-600 border-cyan-200/60' :
+              'bg-slate-50 text-slate-600 border-slate-200/60';
+
+            return (
+              <motion.div
+                key={msg.id}
+                initial={{ opacity: 0, scale: 0.9, y: -10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: -10 }}
+                transition={{ duration: 0.15 }}
+                className={cn(
+                  "pointer-events-auto mx-auto flex items-center justify-center gap-1.5 px-4 py-2 bg-white border rounded-full text-[10px] font-black uppercase tracking-wider shadow-lg select-none cursor-pointer hover:opacity-80 active:scale-95 transition-all text-center max-w-full",
+                  bgClass
+                )}
+                onClick={() => toast.dismiss(msg.id)}
+                title="Clique para fechar"
+              >
+                <span className="truncate">{label}</span>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+      </div>
       {/* Header Fixo - Sempre visível no topo */}
       <div className="flex justify-between items-center py-2 px-4 sm:py-3 sm:px-6 border-b border-slate-100 bg-white z-30 shrink-0">
         <h2 className="text-base sm:text-lg font-black text-slate-900 uppercase tracking-tight truncate pr-2">{getTitle()}</h2>
@@ -2345,8 +2574,10 @@ export function AccessForm({
                           type="button"
                           className="w-full px-4 py-3 text-left hover:bg-blue-50 flex justify-between items-center border-b border-slate-50 last:border-0"
                           onClick={() => {
+                            lastProcessedUnitRef.current = r.unit.toUpperCase();
                             setDestSearch(r.unit);
                             setShowDestSuggestions(false);
+                            selecionarMorador({ id: r.id, residentName: r.name }, true);
                           }}
                         >
                           <span className="font-black text-slate-900 text-sm tracking-tight">{r.unit}</span>
@@ -2433,8 +2664,10 @@ export function AccessForm({
                               type="button"
                               className="w-full px-4 py-3 text-left hover:bg-blue-50 flex justify-between items-center border-b border-slate-50 last:border-0"
                               onClick={() => {
+                                lastProcessedUnitRef.current = r.unit.toUpperCase();
                                 setDestSearch(r.unit);
                                 setShowDestSuggestions(false);
+                                selecionarMorador({ id: r.id, residentName: r.name }, true);
                               }}
                             >
                               <span className="font-black text-slate-900 text-sm tracking-tight">{r.unit}</span>
@@ -2463,9 +2696,9 @@ export function AccessForm({
                         const digits = val.replace(/\D/g, '');
                         if (digits.length === 11 && /^\d+$/.test(digits)) {
                           val = digits.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
-                          setFormData({ ...formData, document: val, cpf: val, rg: '' });
+                          setFormData(prev => ({ ...prev, document: val, cpf: val, rg: '' }));
                         } else {
-                          setFormData({ ...formData, document: val.toUpperCase(), cpf: '', rg: val.toUpperCase() });
+                          setFormData(prev => ({ ...prev, document: val.toUpperCase(), cpf: '', rg: val.toUpperCase() }));
                         }
                         setActiveSuggestionField('document');
                       }}
@@ -2486,7 +2719,8 @@ export function AccessForm({
                       className="w-full h-[46px] pl-12 pr-10 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-base font-bold uppercase tracking-tight"
                       value={formData.name}
                       onChange={(e) => {
-                        setFormData({ ...formData, name: e.target.value.toUpperCase() });
+                        const nameVal = e.target.value.toUpperCase();
+                        setFormData(prev => ({ ...prev, name: nameVal }));
                         setActiveSuggestionField('name');
                       }}
                       onFocus={() => setActiveSuggestionField('name')}
@@ -2511,7 +2745,7 @@ export function AccessForm({
                       value={formData.deliverySubtype || 'carro'}
                       onChange={(e) => {
                         const val = e.target.value as DeliverySubtype;
-                        setFormData({ ...formData, deliverySubtype: val });
+                        setFormData(prev => ({ ...prev, deliverySubtype: val }));
                       }}
                     >
                       <option value="motoboy">MOTO</option>
@@ -2538,7 +2772,8 @@ export function AccessForm({
                       )}
                       value={formData.plate}
                       onChange={(e) => {
-                        setFormData({ ...formData, plate: e.target.value.toUpperCase() });
+                        const plateVal = e.target.value.toUpperCase();
+                        setFormData(prev => ({ ...prev, plate: plateVal }));
                         setActiveSuggestionField('plate');
                       }}
                       onFocus={() => setActiveSuggestionField('plate')}
@@ -2556,7 +2791,10 @@ export function AccessForm({
                       placeholder="VEÍCULO"
                       className="w-full h-[46px] px-2 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none focus:outline-none text-xs font-bold uppercase tracking-tight transition-all"
                       value={formData.vehicleModel}
-                      onChange={(e) => setFormData({ ...formData, vehicleModel: e.target.value.toUpperCase() })}
+                      onChange={(e) => {
+                        const modelVal = e.target.value.toUpperCase();
+                        setFormData(prev => ({ ...prev, vehicleModel: modelVal }));
+                      }}
                       onKeyDown={(e) => handleKeyDown(e, 'vehicleModel')}
                     />
                   </div>
@@ -2571,7 +2809,10 @@ export function AccessForm({
                           placeholder="OUTRA COR"
                           className="w-full h-[46px] pl-3 pr-8 bg-slate-50 border-2 border-slate-200 rounded-xl focus:border-blue-500 focus:bg-white outline-none focus:outline-none text-xs font-bold uppercase tracking-tight transition-all"
                           value={formData.vehicleColor}
-                          onChange={(e) => setFormData({ ...formData, vehicleColor: e.target.value.toUpperCase() })}
+                          onChange={(e) => {
+                            const colorVal = e.target.value.toUpperCase();
+                            setFormData(prev => ({ ...prev, vehicleColor: colorVal }));
+                          }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
                               e.preventDefault();
@@ -2579,7 +2820,7 @@ export function AccessForm({
                             } else if (e.key === 'Escape') {
                               e.preventDefault();
                               setShowCustomColorInput(false);
-                              setFormData({ ...formData, vehicleColor: '' });
+                              setFormData(prev => ({ ...prev, vehicleColor: '' }));
                               setTimeout(() => {
                                 colorRefs.current[10]?.focus(); // focus "Outra" button again
                               }, 50);
@@ -2590,7 +2831,7 @@ export function AccessForm({
                           type="button"
                           onClick={() => {
                             setShowCustomColorInput(false);
-                            setFormData({ ...formData, vehicleColor: '' });
+                            setFormData(prev => ({ ...prev, vehicleColor: '' }));
                             setTimeout(() => {
                               colorRefs.current[10]?.focus();
                             }, 50);
@@ -2653,7 +2894,10 @@ export function AccessForm({
                     placeholder="OBSERVAÇÕES..."
                     className="w-full pl-12 pr-4 py-2.5 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-sm font-medium min-h-[70px] sm:min-h-[85px] resize-none"
                     value={formData.notes}
-                    onChange={(e) => setFormData({ ...formData, notes: e.target.value.toUpperCase() })}
+                    onChange={(e) => {
+                      const notesVal = e.target.value.toUpperCase();
+                      setFormData(prev => ({ ...prev, notes: notesVal }));
+                    }}
                     onKeyDown={(e) => handleKeyDown(e, 'notes')}
                   />
                 </div>
@@ -2734,8 +2978,10 @@ export function AccessForm({
                               type="button"
                               className="w-full px-4 py-3 text-left hover:bg-blue-50 flex justify-between items-center border-b border-slate-50 last:border-0"
                               onClick={() => {
+                                lastProcessedUnitRef.current = r.unit.toUpperCase();
                                 setDestSearch(r.unit);
                                 setShowDestSuggestions(false);
+                                selecionarMorador({ id: r.id, residentName: r.name }, true);
                               }}
                             >
                               <span className="font-black text-slate-900 text-sm tracking-tight">{r.unit}</span>
@@ -2759,14 +3005,29 @@ export function AccessForm({
                       className="w-full h-[46px] pl-9 pr-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-xs font-bold uppercase tracking-tight"
                       value={formData.name}
                       onChange={(e) => {
-                        setFormData({ ...formData, name: e.target.value.toUpperCase() });
+                        const nameVal = e.target.value.toUpperCase();
+                        setFormData(prev => ({ ...prev, name: nameVal }));
                         setActiveSuggestionField('name');
+                        if (nameValidationError) {
+                          const parts = nameVal.trim().split(/\s+/).filter(Boolean);
+                          if (parts.length >= 2) {
+                            setNameValidationError(null);
+                          }
+                        }
                       }}
                       onFocus={() => setActiveSuggestionField('name')}
-                      onBlur={() => setTimeout(() => setActiveSuggestionField(null), 200)}
+                      onBlur={(e) => {
+                        handleNameBlur(e);
+                        setTimeout(() => setActiveSuggestionField(null), 200);
+                      }}
                       onKeyDown={(e) => handleKeyDown(e, 'name')}
                     />
                     {renderSmartSuggestions('name')}
+                    {nameValidationError && (
+                      <div className="absolute top-full left-0 right-0 z-30 bg-red-50 text-red-600 text-[8.5px] font-bold p-1 px-2 rounded-lg border border-red-200 shadow-sm mt-1 animate-pulse uppercase tracking-tight text-center">
+                        {nameValidationError}
+                      </div>
+                    )}
                   </div>
 
                   {/* SOLICITADO POR: 35% */}
@@ -2776,7 +3037,8 @@ export function AccessForm({
                       onClick={() => {
                         // Reset selection to let them alter/select again
                         setResidentSelectionConfirmed(false);
-                        setIsManualResident(true);
+                        // Only go to manual mode if no residents exist for the unit
+                        setIsManualResident(activeResidentsForUnit.length === 0);
                       }}
                       className={cn(
                         "w-full h-[46px] px-3 bg-slate-50 border-2 border-slate-100 rounded-xl flex items-center transition-all cursor-pointer hover:border-slate-300 select-none",
@@ -2844,7 +3106,7 @@ export function AccessForm({
                         {activeResidentsForUnit.length === 0 && !isManualResident && (
                           <div className="text-center py-2">
                             <p className="text-[10px] font-black text-red-500 uppercase tracking-widest mb-2">
-                              Nenhum morador encontrado para esta unidade.
+                              Nenhum morador cadastrado para esta unidade.
                             </p>
                             <button
                               id="delivery-f2-manual-btn"
@@ -2935,8 +3197,10 @@ export function AccessForm({
                             type="button"
                             className="w-full px-4 py-3 text-left hover:bg-blue-50 flex justify-between items-center border-b border-slate-50 last:border-0"
                             onClick={() => {
+                              lastProcessedUnitRef.current = r.unit.toUpperCase();
                               setDestSearch(r.unit);
                               setShowDestSuggestions(false);
+                              selecionarMorador({ id: r.id, residentName: r.name }, true);
                             }}
                           >
                             <span className="font-black text-slate-900 text-sm tracking-tight">{r.unit}</span>
@@ -2962,14 +3226,29 @@ export function AccessForm({
                     className="w-full h-[46px] pl-12 pr-10 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-base font-bold uppercase tracking-tight"
                     value={formData.name}
                     onChange={(e) => {
-                      setFormData({ ...formData, name: e.target.value.toUpperCase() });
+                      const nameVal = e.target.value.toUpperCase();
+                      setFormData(prev => ({ ...prev, name: nameVal }));
                       setActiveSuggestionField('name');
+                      if (nameValidationError) {
+                        const parts = nameVal.trim().split(/\s+/).filter(Boolean);
+                        if (parts.length >= 2) {
+                          setNameValidationError(null);
+                        }
+                      }
                     }}
                     onFocus={() => setActiveSuggestionField('name')}
-                    onBlur={() => setTimeout(() => setActiveSuggestionField(null), 200)}
+                    onBlur={(e) => {
+                      handleNameBlur(e);
+                      setTimeout(() => setActiveSuggestionField(null), 200);
+                    }}
                     onKeyDown={(e) => handleKeyDown(e, 'name')}
                   />
                   {renderSmartSuggestions('name')}
+                  {nameValidationError && (
+                    <div className="absolute top-full left-0 right-0 z-30 bg-red-50 text-red-600 text-[10px] font-bold p-1 px-2 rounded-lg border border-red-200 shadow-sm mt-1 animate-pulse uppercase tracking-tight text-center">
+                      {nameValidationError}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -2990,9 +3269,9 @@ export function AccessForm({
                       const digits = val.replace(/\D/g, '');
                       if (digits.length === 11 && /^\d+$/.test(digits)) {
                         val = digits.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
-                        setFormData({ ...formData, document: val, cpf: val, rg: '' });
+                        setFormData(prev => ({ ...prev, document: val, cpf: val, rg: '' }));
                       } else {
-                        setFormData({ ...formData, document: val.toUpperCase(), cpf: '', rg: val.toUpperCase() });
+                        setFormData(prev => ({ ...prev, document: val.toUpperCase(), cpf: '', rg: val.toUpperCase() }));
                       }
                       setActiveSuggestionField('document');
                     }}
@@ -3016,11 +3295,11 @@ export function AccessForm({
                       onChange={(e) => {
                         const raw = e.target.value.replace(/\D/g, '');
                         if (raw === '') {
-                          setFormData({ ...formData, prismaNumber: undefined });
+                          setFormData(prev => ({ ...prev, prismaNumber: undefined }));
                         } else {
                           const n = parseInt(raw, 10);
                           if (n >= 0 && n <= 30) {
-                            setFormData({ ...formData, prismaNumber: raw });
+                            setFormData(prev => ({ ...prev, prismaNumber: raw }));
                           }
                         }
                       }}
@@ -3050,10 +3329,10 @@ export function AccessForm({
                           }}
                           type="button"
                           onClick={() => {
-                            setFormData({ 
-                              ...formData, 
-                              prismaColor: formData.prismaColor === c.name ? undefined : c.name 
-                            });
+                            setFormData(prev => ({ 
+                              ...prev, 
+                              prismaColor: prev.prismaColor === c.name ? undefined : c.name 
+                            }));
                             setTimeout(() => {
                               advanceFromField('prismaColor');
                             }, 50);
@@ -3100,9 +3379,9 @@ export function AccessForm({
                     const digits = val.replace(/\D/g, '');
                     if (digits.length === 11 && /^\d+$/.test(digits)) {
                       val = digits.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
-                      setFormData({ ...formData, document: val, cpf: val, rg: '' });
+                      setFormData(prev => ({ ...prev, document: val, cpf: val, rg: '' }));
                     } else {
-                      setFormData({ ...formData, document: val.toUpperCase(), cpf: '', rg: val.toUpperCase() });
+                      setFormData(prev => ({ ...prev, document: val.toUpperCase(), cpf: '', rg: val.toUpperCase() }));
                     }
                     setActiveSuggestionField('document');
                   }}
@@ -3129,11 +3408,11 @@ export function AccessForm({
                   onChange={(e) => {
                     const val = e.target.value as DeliverySubtype;
                     if (val === 'a_pe') {
-                      setFormData({ ...formData, onFoot: true, deliverySubtype: 'a_pe', plate: '', vehicleModel: '' });
+                      setFormData(prev => ({ ...prev, onFoot: true, deliverySubtype: 'a_pe', plate: '', vehicleModel: '' }));
                     } else if (val === 'bicicleta') {
-                      setFormData({ ...formData, onFoot: false, deliverySubtype: 'bicicleta', plate: '', vehicleModel: '' });
+                      setFormData(prev => ({ ...prev, onFoot: false, deliverySubtype: 'bicicleta', plate: '', vehicleModel: '' }));
                     } else {
-                      setFormData({ ...formData, onFoot: false, deliverySubtype: val });
+                      setFormData(prev => ({ ...prev, onFoot: false, deliverySubtype: val }));
                     }
                   }}
                   onKeyDown={(e) => {
@@ -3172,7 +3451,8 @@ export function AccessForm({
                   )}
                   value={(formData.onFoot || formData.deliverySubtype === 'bicicleta') ? "" : formData.plate}
                   onChange={(e) => {
-                    setFormData({ ...formData, plate: e.target.value.toUpperCase() });
+                    const plateVal = e.target.value.toUpperCase();
+                    setFormData(prev => ({ ...prev, plate: plateVal }));
                     setActiveSuggestionField('plate');
                   }}
                   onFocus={() => setActiveSuggestionField('plate')}
@@ -3194,7 +3474,10 @@ export function AccessForm({
                     (formData.onFoot || formData.deliverySubtype === 'bicicleta') ? "bg-slate-100 border-slate-200 opacity-50 cursor-not-allowed" : "bg-slate-50 border-slate-100 focus:border-blue-500"
                   )}
                   value={(formData.onFoot || formData.deliverySubtype === 'bicicleta') ? "" : formData.vehicleModel}
-                  onChange={(e) => setFormData({ ...formData, vehicleModel: e.target.value.toUpperCase() })}
+                  onChange={(e) => {
+                    const modelVal = e.target.value.toUpperCase();
+                    setFormData(prev => ({ ...prev, vehicleModel: modelVal }));
+                  }}
                   onKeyDown={(e) => handleKeyDown(e, 'vehicleModel')}
                 />
               </div>
@@ -3205,13 +3488,13 @@ export function AccessForm({
                 onClick={(e) => {
                   e.currentTarget.blur();
                   const newOnFoot = !formData.onFoot;
-                  setFormData({ 
-                    ...formData, 
+                  setFormData(prev => ({ 
+                    ...prev, 
                     onFoot: newOnFoot, 
                     plate: '', 
                     vehicleModel: '', 
                     deliverySubtype: newOnFoot ? 'a_pe' : (type === 'delivery' ? 'motoboy' : 'carro')
-                  });
+                  }));
                 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
@@ -3240,7 +3523,10 @@ export function AccessForm({
                   placeholder="EMPRESA / SERVIÇOS"
                   className="w-full h-[46px] pl-12 pr-4 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-base font-medium tracking-tight uppercase"
                   value={formData.company}
-                  onChange={(e) => setFormData({ ...formData, company: e.target.value.toUpperCase() })}
+                  onChange={(e) => {
+                    const companyVal = e.target.value.toUpperCase();
+                    setFormData(prev => ({ ...prev, company: companyVal }));
+                  }}
                   onKeyDown={(e) => handleKeyDown(e, 'company')}
                 />
               </div>
@@ -3253,7 +3539,10 @@ export function AccessForm({
                 placeholder="OBSERVAÇÕES..."
                 className="w-full pl-12 pr-4 py-2.5 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all text-sm font-medium min-h-[70px] sm:min-h-[85px] resize-none"
                 value={formData.notes}
-                onChange={(e) => setFormData({ ...formData, notes: e.target.value.toUpperCase() })}
+                onChange={(e) => {
+                  const notesVal = e.target.value.toUpperCase();
+                  setFormData(prev => ({ ...prev, notes: notesVal }));
+                }}
                 onKeyDown={(e) => handleKeyDown(e, 'notes')}
               />
             </div>

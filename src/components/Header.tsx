@@ -45,13 +45,18 @@ export function Header({
   return (
     <header className="bg-slate-900 text-white p-4 sm:p-6 flex flex-row justify-between items-center shadow-xl border-b border-slate-800 w-full overflow-hidden box-border">
       <div className="flex items-center gap-4 sm:gap-5">
-        <div className="bg-blue-600 p-2.5 sm:p-3 rounded-2xl shadow-lg shadow-blue-500/20 shrink-0">
-          <Shield className="w-6 h-6 sm:w-7 h-7" />
+        <div className="bg-transparent rounded-2xl overflow-hidden shrink-0 w-11 h-11 sm:w-13 sm:h-13 flex items-center justify-center shadow-lg shadow-blue-500/10">
+          <img 
+            src="/favicon.png" 
+            alt="ACCEPASS Logo" 
+            className="w-full h-full object-cover" 
+            referrerPolicy="no-referrer" 
+          />
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h1 className="text-lg sm:text-xl font-black uppercase tracking-tighter leading-none whitespace-nowrap">
-              Portaria Pro <span className="text-blue-500 mx-1">-</span> <span className="text-slate-400 font-bold">Acesso</span>
+              ACCEPASS <span className="text-blue-500 mx-1">-</span> <span className="text-slate-400 font-bold">Acesso</span>
             </h1>
           </div>
           <p className="text-[10px] sm:text-xs text-slate-500 font-black uppercase tracking-[0.2em] mt-1.5 truncate">

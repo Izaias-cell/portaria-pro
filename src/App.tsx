@@ -668,6 +668,13 @@ export default function App() {
         .from('condominios')
         .select('id, nome');
       if (!condosError && condosData && condosData.length > 0) {
+        console.log('=== LOGS DE CARREGAMENTO DE CONDOMÍNIOS (App.tsx - Supabase) ===');
+        console.log('Quantidade de condomínios retornados:', condosData.length);
+        console.log('Objeto completo retornado pela consulta:', JSON.stringify(condosData, null, 2));
+        condosData.forEach((c, idx) => {
+          console.log(`Condomínio [${idx}]: Nome = "${c.nome}", UUID = "${c.id}"`);
+        });
+
         localCondos = condosData;
         setCondominios(condosData);
         localStorage.setItem('portaria_condominios', JSON.stringify(condosData));
@@ -680,6 +687,13 @@ export default function App() {
           try { 
             const parsed = JSON.parse(saved); 
             if (parsed && parsed.length > 0) {
+              console.log('=== LOGS DE CARREGAMENTO DE CONDOMÍNIOS (App.tsx - LocalStorage Cache) ===');
+              console.log('Quantidade de condomínios retornados:', parsed.length);
+              console.log('Objeto completo retornado pela consulta (Cache):', JSON.stringify(parsed, null, 2));
+              parsed.forEach((c, idx) => {
+                console.log(`Condomínio [${idx}]: Nome = "${c.nome}", UUID = "${c.id}"`);
+              });
+
               localCondos = parsed;
               setCondominios(parsed);
             }
@@ -687,7 +701,14 @@ export default function App() {
         }
         
         if (localCondos.length === 0) {
+          console.log('=== LOGS DE CARREGAMENTO DE CONDOMÍNIOS (App.tsx - Fallback) ===');
           localCondos = [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
+          console.log('Quantidade de condomínios retornados:', localCondos.length);
+          console.log('Objeto completo retornado pela consulta (Fallback):', JSON.stringify(localCondos, null, 2));
+          localCondos.forEach((c, idx) => {
+            console.log(`Condomínio [${idx}]: Nome = "${c.nome}", UUID = "${c.id}"`);
+          });
+
           setCondominios(localCondos);
         }
       }
@@ -2768,6 +2789,25 @@ export default function App() {
     }
   };
 
+  const handleUpdateCondominios = async (updatedCondos: Condominio[]) => {
+    setCondominios(updatedCondos);
+    localStorage.setItem('portaria_condominios', JSON.stringify(updatedCondos));
+    
+    // Attempt Supabase sync for any newly created/modified condos
+    for (const condo of updatedCondos) {
+      try {
+        const { error } = await supabase
+          .from('condominios')
+          .upsert({ id: condo.id, nome: condo.nome });
+        if (error) {
+          console.warn('Erro ao sincronizar condomínio com Supabase:', error.message);
+        }
+      } catch (e) {
+        console.warn('Falha na tentativa de upsert no Supabase:', e);
+      }
+    }
+  };
+
   const handleUpdatePorteiros = async (newPorteirosList: Porteiro[]) => {
     // Save locally first for instant feedback
     setPorteiros(newPorteirosList);
@@ -2779,23 +2819,11 @@ export default function App() {
       const cols = await getProfileTableColumns();
       console.log('handleUpdatePorteiros: Colunas reais detectadas em perfis:', cols);
 
-      // Fetch freshest condominios for strict UUID validation
-      console.log('Sincronizador: Buscando condomínios do banco para validação de UUID...');
-      const { data: dbCondominios, error: condosDbError } = await supabase
-        .from('condominios')
-        .select('id, nome');
-
-      if (condosDbError) {
-        console.error('Sincronizador: Erro ao buscar condomínios para validação de UUID:', condosDbError);
-      }
-
-      const activeCondos = dbCondominios || [];
-
-      // Helper function to validate and resolve condominio UUID
+      // Helper function to validate and resolve condominio UUID using local state directly
       const validateAndResolveCondo = (condoId: string | undefined, condoNameStr: string | undefined) => {
-        if (activeCondos.length === 0) {
-          throw new Error('A tabela de condomínios está vazia no banco de dados. Cadastre um condomínio primeiro.');
-        }
+        const activeCondos = condominios && condominios.length > 0 
+          ? condominios 
+          : [{ id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' }];
 
         let finalId = condoId || '';
         let matched = activeCondos.find(c => c.id === finalId);
@@ -2814,8 +2842,10 @@ export default function App() {
           finalId = matched.id;
         }
 
-        if (!matched || !finalId) {
-          throw new Error('Não foi possível associar um condomínio válido com UUID existente no banco de dados.');
+        // Fallback to BELLE VILLE if unmatched
+        if (!matched) {
+          matched = { id: 'b34e2c05-bf73-45a1-968c-db505d97f1f9', nome: 'BELLE VILLE' };
+          finalId = matched.id;
         }
 
         // Verify it is a valid UUID
@@ -2996,8 +3026,27 @@ export default function App() {
 
             const insertPayload = buildFilteredPayloadForSync(rawInsertPayload, resolvedCondoInfo.id);
 
-            // Logs as requested in requirement 3
-            console.log('Objeto completo enviado para o insert da tabela perfis (App.tsx):', JSON.stringify(insertPayload, null, 2));
+            // Required Logging before insert on perfis in App.tsx
+            console.log('=== LOGS EXIGIDOS ANTES DO INSERT NA TABELA PERFIS (App.tsx) ===');
+            console.log('1. Objeto completo enviado ao insert:', JSON.stringify(insertPayload, null, 2));
+            console.log('2. Valor exato de condominio_id:', insertPayload.condominio_id);
+            console.log('3. Tipo do valor (string, object, undefined, null):', typeof insertPayload.condominio_id);
+            
+            const dbBelleVilleInsert = condominios.find(c => c.nome.toUpperCase() === 'BELLE VILLE');
+            const dbBelleVilleUuidInsert = dbBelleVilleInsert ? dbBelleVilleInsert.id : null;
+            console.log('4. UUID existente na tabela condominios correspondente ao BELLE VILLE:', dbBelleVilleUuidInsert);
+            
+            const comparisonResultInsert = insertPayload.condominio_id === dbBelleVilleUuidInsert;
+            console.log('5. Resultado da comparação entre o UUID enviado e o UUID existente:', comparisonResultInsert);
+            
+            if (!comparisonResultInsert) {
+              console.log('=== DETALHES DA DIFERENÇA (INSERT - App.tsx) ===');
+              console.log(`Diferença detectada! O valor enviado para condominio_id é "${insertPayload.condominio_id}", mas o UUID correspondente ao BELLE VILLE existente na tabela de condomínios retornada pelo banco é "${dbBelleVilleUuidInsert}".`);
+              if (dbBelleVilleUuidInsert === null) {
+                console.log('Causa raiz provável: A tabela "condominios" no banco de dados está completamente vazia (0 linhas). Portanto, não existe nenhum UUID correspondente a "BELLE VILLE" registrado em "condominios", violando a chave estrangeira (foreign key) ao inserir/atualizar perfis.');
+              }
+            }
+            console.log('================================================================');
 
             const { error: profileError } = await supabase
               .from('perfis')
@@ -3066,8 +3115,27 @@ export default function App() {
 
             const updatePayload = buildFilteredPayloadForSync(rawUpdatePayload, resolvedCondoInfo.id);
 
-            // Logs as requested in requirement 3
-            console.log('Objeto completo enviado para o update da tabela perfis (App.tsx):', JSON.stringify(updatePayload, null, 2));
+            // Required Logging before update on perfis in App.tsx
+            console.log('=== LOGS EXIGIDOS ANTES DO UPDATE NA TABELA PERFIS (App.tsx) ===');
+            console.log('1. Objeto completo enviado ao update:', JSON.stringify(updatePayload, null, 2));
+            console.log('2. Valor exato de condominio_id:', updatePayload.condominio_id);
+            console.log('3. Tipo do valor (string, object, undefined, null):', typeof updatePayload.condominio_id);
+            
+            const dbBelleVilleUpdate = condominios.find(c => c.nome.toUpperCase() === 'BELLE VILLE');
+            const dbBelleVilleUuidUpdate = dbBelleVilleUpdate ? dbBelleVilleUpdate.id : null;
+            console.log('4. UUID existente na tabela condominios correspondente ao BELLE VILLE:', dbBelleVilleUuidUpdate);
+            
+            const comparisonResultUpdate = updatePayload.condominio_id === dbBelleVilleUuidUpdate;
+            console.log('5. Resultado da comparação entre o UUID enviado e o UUID existente:', comparisonResultUpdate);
+            
+            if (!comparisonResultUpdate) {
+              console.log('=== DETALHES DA DIFERENÇA (UPDATE - App.tsx) ===');
+              console.log(`Diferença detectada! O valor enviado para condominio_id é "${updatePayload.condominio_id}", mas o UUID correspondente ao BELLE VILLE existente na tabela de condomínios retornada pelo banco é "${dbBelleVilleUuidUpdate}".`);
+              if (dbBelleVilleUuidUpdate === null) {
+                console.log('Causa raiz provável: A tabela "condominios" no banco de dados está completamente vazia (0 linhas). Portanto, não existe nenhum UUID correspondente a "BELLE VILLE" registrado em "condominios", violando a chave estrangeira (foreign key) ao inserir/atualizar perfis.');
+              }
+            }
+            console.log('================================================================');
 
             const { error: profileError } = await supabase
               .from('perfis')
@@ -3826,7 +3894,7 @@ export default function App() {
         </div>
       )}
 
-      {/* PORTARIA PRO - MAIN CONTAINER */}
+      {/* ACCEPASS - MAIN CONTAINER */}
       <div 
         id="main-app-container"
         className={cn(
@@ -4068,7 +4136,7 @@ export default function App() {
                         animate={{ opacity: 1, height: "auto", marginBottom: 0 }}
                         exit={{ opacity: 0, height: 0, marginBottom: 0 }}
                         transition={{ duration: 0.3 }}
-                        className="w-full overflow-hidden"
+                        className="w-full overflow-visible"
                       >
                         <QuickActions 
                           onAction={(type) => {
@@ -4142,6 +4210,10 @@ export default function App() {
                           onCancelPreAuth={(p) => handleCancelAction(p.id, true)}
                           isSelected={kbArea === 'resident-card'}
                           unitPhones={unitPhones}
+                          frequentVisitors={frequentVisitors}
+                          records={records}
+                          unitRules={unitRules}
+                          onReleaseDirect={handleReleaseDirect}
                         />
                       </div>
 
@@ -4278,36 +4350,7 @@ export default function App() {
                         </div>
                       )}
 
-                      {otherResidents.length > 0 && (
-                        <div className="flex flex-wrap gap-2 max-w-2xl mx-auto w-full">
-                          {otherResidents.map(other => {
-                            const unitAllResidents = unitPhones.filter(p => p.unit === other.unit);
-                            const isFast = isFastestResponder(other.id, unitAllResidents);
-                            
-                            return (
-                              <button
-                                key={other.id}
-                                onClick={() => handleSwitchResident(other)}
-                                className="flex-1 min-w-[calc(50%-4px)] bg-white border border-slate-200 rounded-xl px-2 py-1.5 flex flex-col items-center justify-center gap-0 hover:border-blue-300 hover:bg-blue-50/20 transition-all active:scale-[0.98] shadow-sm group h-12"
-                              >
-                                <div className="flex items-center gap-1.5 w-full justify-center">
-                                  <span className="text-sm grayscale group-hover:grayscale-0 transition-all">
-                                    {getResidentIcon(other.residentName)}
-                                  </span>
-                                  <span className="text-[10px] font-black text-slate-600 uppercase truncate">
-                                    {other.residentName.split(' ')[0]}
-                                  </span>
-                                </div>
-                                {isFast && (
-                                  <span className="text-[7px] font-bold text-amber-500 uppercase tracking-tighter flex items-center gap-0.5 leading-none">
-                                    ⭐ RESPONDE MAIS RÁPIDO
-                                  </span>
-                                )}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
+                      {/* Removed duplicate resident cards (otherResidents) in favor of Card Unidade */}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -4316,7 +4359,7 @@ export default function App() {
 
             <div className="relative">
               <AnimatePresence initial={false}>
-                {searchTerm ? (
+                {searchTerm && !matchedResident ? (
                   <motion.div 
                     key="search-results"
                     initial={{ opacity: 0, x: 20 }}
@@ -4350,7 +4393,7 @@ export default function App() {
                       />
                     </div>
                   </motion.div>
-              ) : (
+              ) : !searchTerm ? (
                 <motion.div 
                   key="dashboard"
                   initial={{ opacity: 0, x: -20 }}
@@ -5044,7 +5087,7 @@ export default function App() {
                     </div>
                     </div>
                 </motion.div>
-              )}
+              ) : null}
             </AnimatePresence>
           </div>
 
@@ -5567,6 +5610,8 @@ export default function App() {
             permanentProfiles={permanentProfiles}
             porteiros={porteiros}
             onUpdatePorteiros={handleUpdatePorteiros}
+            condominios={condominios}
+            onUpdateCondominios={handleUpdateCondominios}
             loggedPorterName={loggedPorter?.name}
             onRegisterOperationalLog={handleRegisterOperationalLog}
             onUpdateFrequents={setFrequentVisitors}
@@ -5600,8 +5645,13 @@ export default function App() {
             {userRole === 'porteiro' ? (
               <div className="max-w-md mx-auto mt-8 bg-white p-8 rounded-[2rem] border border-slate-200 shadow-2xl space-y-6 animate-in fade-in zoom-in-95 duration-200">
                 <div className="text-center space-y-2">
-                  <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto shadow-sm">
-                    <Shield className="w-8 h-8" />
+                  <div className="w-16 h-16 bg-transparent rounded-2xl overflow-hidden flex items-center justify-center mx-auto shadow-sm">
+                    <img 
+                      src="/favicon.png" 
+                      alt="ACCEPASS Logo" 
+                      className="w-full h-full object-cover" 
+                      referrerPolicy="no-referrer" 
+                    />
                   </div>
                   <h3 className="text-lg font-black text-slate-900 uppercase tracking-wider">Acesso ao Painel</h3>
                   <p className="text-[10px] font-bold text-slate-400 uppercase leading-relaxed max-w-xs mx-auto text-center">
@@ -5701,6 +5751,8 @@ export default function App() {
                     permanentProfiles={permanentProfiles}
                     porteiros={porteiros}
                     onUpdatePorteiros={handleUpdatePorteiros}
+                    condominios={condominios}
+                    onUpdateCondominios={handleUpdateCondominios}
                     loggedPorterName={loggedPorter?.name}
                     onRegisterOperationalLog={handleRegisterOperationalLog}
                     onUpdateFrequents={setFrequentVisitors}

@@ -50,16 +50,24 @@ export function PorterPinLogin({ condoName, onLogin }: PorterPinLoginProps) {
         className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-[2rem] shadow-2xl p-6 sm:p-8 flex flex-col items-center relative z-10"
       >
         {/* Emblem */}
-        <div className="w-16 h-16 bg-blue-500/10 border-2 border-blue-500/25 rounded-3xl flex items-center justify-center text-blue-400 mb-4">
-          <Shield className="w-8 h-8 font-black" />
+        <div className="w-20 h-20 bg-transparent rounded-3xl overflow-hidden flex items-center justify-center mb-4">
+          <img 
+            src="/favicon.png" 
+            alt="ACCEPASS Logo" 
+            className="w-full h-full object-cover" 
+            referrerPolicy="no-referrer" 
+          />
         </div>
 
         {/* Header Title */}
-        <div className="text-center space-y-2 mb-6">
-          <h2 className="text-2xl font-black text-white tracking-tight uppercase">
-            Acesso ao Sistema
+        <div className="text-center space-y-1.5 mb-6">
+          <h2 className="text-3xl font-black text-white tracking-tighter uppercase leading-none">
+            ACCEPASS
           </h2>
-          <div className="inline-flex items-center gap-1.5 bg-slate-800/80 px-4 py-1.5 rounded-full border border-slate-700/50">
+          <p className="text-[10px] text-blue-400 font-extrabold uppercase tracking-wider">
+            Acesso inteligente. Liberação imediata.
+          </p>
+          <div className="inline-flex items-center gap-1.5 bg-slate-800/80 px-4 py-1.5 rounded-full border border-slate-700/50 mt-1">
             <span className="text-[10px] font-black uppercase text-slate-300 tracking-wider">
               {condoName}
             </span>

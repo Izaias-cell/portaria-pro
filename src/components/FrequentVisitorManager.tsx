@@ -3,7 +3,7 @@ import { FrequentVisitor, AccessType, DeliverySubtype, AccessRule } from '../typ
 import { Search, Plus, Edit2, Trash2, Check, X, Shield, ShieldAlert, Car, MapPin, User, Bike, Wrench, ChevronDown, Power, Zap, MessageSquare } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
-import { toast } from '../lib/toast';
+import { toast, toastStore, ToastMessage } from '../lib/toast';
 import { format } from 'date-fns';
 import { getCorrectedType } from '../lib/classificationUtils';
 
@@ -36,11 +36,21 @@ export function FrequentVisitorManager({ visitors, onUpdate, onReleaseDirect, on
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingVisitor, setEditingVisitor] = useState<FrequentVisitor | null>(null);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [activeToasts, setActiveToasts] = useState<ToastMessage[]>([]);
+
+  React.useEffect(() => {
+    return toastStore.subscribe((messages) => {
+      setActiveToasts(messages);
+    });
+  }, []);
 
   const handleCardClick = (visitor: FrequentVisitor) => {
     if (readOnly || !visitor.active) return;
     setProcessingId(visitor.id);
     onReleaseDirect(visitor);
+    if (visitor.rule === 'SEMPRE_LIBERADO') {
+      setTimeout(() => setProcessingId(null), 1000);
+    }
   };
 
   const filteredVisitors = useMemo(() => {
@@ -109,6 +119,7 @@ export function FrequentVisitorManager({ visitors, onUpdate, onReleaseDirect, on
         unit: data.unit!,
         name: data.name!,
         relationship: data.relationship,
+        document: data.document,
         type: finalData.type!,
         deliverySubtype: finalData.deliverySubtype,
         plate: data.plate,
@@ -314,6 +325,52 @@ export function FrequentVisitorManager({ visitors, onUpdate, onReleaseDirect, on
           </div>
         )}
       </AnimatePresence>
+
+      {/* Floating feedback/toast for Frequentes View */}
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] pointer-events-none flex flex-col gap-2 w-full max-w-sm px-4">
+        <AnimatePresence mode="popLayout">
+          {activeToasts.slice(0, 1).map((msg) => {
+            const upper = msg.message.toUpperCase();
+            let label = upper;
+            if (upper.includes('LIBERAÇÃO') || upper.includes('LIBERACAO')) {
+              label = '✓ LIBERAÇÃO AUTORIZADA';
+            } else if (upper.includes('CANCELAD')) {
+              label = '✓ AÇÃO CANCELADA';
+            } else if (upper.includes('ENTREGA') && (upper.includes('REGISTRAD') || upper.includes('LIBERAD'))) {
+              label = '✓ ENTREGA REGISTRADA';
+            } else if (upper.includes('VISITANTE') && (upper.includes('LIBERAD') || upper.includes('REGISTRAD'))) {
+              label = '✓ VISITANTE LIBERADO';
+            } else {
+              label = '✓ ' + upper;
+            }
+
+            const bgClass =
+              msg.type === 'success' ? 'bg-emerald-50 text-emerald-600 border-emerald-200/60' :
+              msg.type === 'error' ? 'bg-red-50 text-red-600 border-red-200/60' :
+              msg.type === 'warning' ? 'bg-amber-50 text-amber-600 border-amber-200/65 font-black' :
+              msg.type === 'info' ? 'bg-cyan-50 text-cyan-600 border-cyan-200/60' :
+              'bg-slate-50 text-slate-600 border-slate-200/60';
+
+            return (
+              <motion.div
+                key={msg.id}
+                initial={{ opacity: 0, scale: 0.9, y: 15 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: -15 }}
+                transition={{ duration: 0.15 }}
+                className={cn(
+                  "pointer-events-auto mx-auto flex items-center justify-center gap-1.5 px-4 py-2 bg-white border rounded-full text-[10px] font-black uppercase tracking-wider shadow-lg select-none cursor-pointer hover:opacity-80 active:scale-95 transition-all text-center max-w-full",
+                  bgClass
+                )}
+                onClick={() => toast.dismiss(msg.id)}
+                title="Clique para fechar"
+              >
+                <span className="truncate">{label}</span>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }
@@ -330,6 +387,7 @@ function FrequentVisitorForm({ initialData, onClose, onSave }: FrequentVisitorFo
     unit: initialData?.unit || '',
     name: initialData?.name || '',
     relationship: initialData?.relationship || '',
+    document: initialData?.document || '',
     type: defaultType,
     deliverySubtype: initialData?.deliverySubtype || (defaultType === 'delivery' ? 'motoboy' : '' as any as DeliverySubtype),
     plate: initialData?.plate || '',
@@ -360,41 +418,56 @@ function FrequentVisitorForm({ initialData, onClose, onSave }: FrequentVisitorFo
 
       <div className="flex-1 overflow-y-auto p-6">
         <form id="frequent-form" onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Casa / Apto</label>
+          {/* Primeira linha: CASA | NOME COMPLETO / VÍNCULO | CPF/RG */}
+          <div className="grid grid-cols-12 gap-3 items-start">
+            <div className="col-span-2 space-y-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Casa/Apto</label>
               <input
                 required
                 type="text"
+                placeholder="Ex: 102"
                 className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold"
                 value={formData.unit}
                 onChange={e => setFormData({ ...formData, unit: e.target.value })}
               />
             </div>
-            <div className="space-y-1">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Vínculo</label>
+            
+            <div className="col-span-7 space-y-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome Completo / Vínculo</label>
+              <div className="flex items-center gap-2">
+                <input
+                  required
+                  type="text"
+                  placeholder="Nome Completo"
+                  className="flex-[2] min-w-0 px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold text-sm"
+                  value={formData.name}
+                  onChange={e => setFormData({ ...formData, name: e.target.value })}
+                />
+                <span className="text-slate-300 font-bold shrink-0">/</span>
+                <input
+                  type="text"
+                  placeholder="Vínculo (Ex: Mãe, Diarista...)"
+                  className="flex-[1] min-w-0 px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold text-sm"
+                  value={formData.relationship}
+                  onChange={e => setFormData({ ...formData, relationship: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="col-span-3 space-y-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">CPF / RG</label>
               <input
                 type="text"
-                placeholder="Ex: Mãe, Diarista..."
+                placeholder="CPF ou RG"
                 className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold"
-                value={formData.relationship}
-                onChange={e => setFormData({ ...formData, relationship: e.target.value })}
+                value={formData.document}
+                onChange={e => setFormData({ ...formData, document: e.target.value })}
               />
             </div>
           </div>
 
-          <div className="space-y-1">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome Completo</label>
-            <input
-              required
-              type="text"
-              className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold"
-              value={formData.name}
-              onChange={e => setFormData({ ...formData, name: e.target.value })}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* Segunda linha: TIPO PRINCIPAL | VEÍCULO / PLACA */}
+          <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tipo Principal</label>
               <select
@@ -411,6 +484,7 @@ function FrequentVisitorForm({ initialData, onClose, onSave }: FrequentVisitorFo
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Veículo / Placa</label>
               <input
                 type="text"
+                placeholder="Opcional"
                 className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 outline-none transition-all font-bold uppercase"
                 value={formData.plate}
                 onChange={e => setFormData({ ...formData, plate: e.target.value })}

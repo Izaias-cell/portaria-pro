@@ -68,6 +68,7 @@ export interface FrequentVisitor {
   unit: string;
   name: string;
   relationship?: string;
+  document?: string;
   type: AccessType;
   deliverySubtype?: DeliverySubtype;
   plate?: string;

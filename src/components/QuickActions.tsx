@@ -148,7 +148,7 @@ export function QuickActions({
   const [isLoadingResidents, setIsLoadingResidents] = React.useState<boolean>(false);
 
   React.useEffect(() => {
-    const activeType = casaValues.delivery ? 'delivery' : casaValues.visitor ? 'visitor' : null;
+    const activeType = casaValues.delivery ? 'delivery' : casaValues.visitor ? 'visitor' : casaValues.uber ? 'uber' : null;
     if (!activeType) {
       setSolicitanteState({
         activeType: null,
@@ -182,34 +182,58 @@ export function QuickActions({
 
     async function fetchResidents() {
       let residents: any[] = [];
-      try {
-        const { data: units, error: unitErr } = await supabase
-          .from('unidades')
-          .select('*')
-          .or(`numero.eq.${normalizedInput},numero.ilike.%${normalizedInput}%`);
-
-        if (units && units.length > 0) {
-          const unitIds = units.map(u => u.id);
-          const { data: morad, error: moradErr } = await supabase
-            .from('moradores')
-            .select('*')
-            .in('unidade_id', unitIds);
-
-          if (morad) {
-            const activeMorad = morad.filter(m => m.ativo !== false && m.active !== false);
-            residents = activeMorad.map(m => ({
-              id: m.id,
-              unit: units.find(u => u.id === m.unidade_id)?.numero || normalizedInput,
-              residentName: m.nome || m.name || 'Morador',
-              primaryPhone: m.telefone || m.phone || '',
-              active: true
-            }));
-          }
+      
+      // Try local unitPhones first for instant lookup
+      if (unitPhones && unitPhones.length > 0) {
+        const matched = unitPhones.filter(p => {
+          if (p.active === false || p.ativo === false) return false;
+          const unitStr = String(p.unit || '').toUpperCase().trim();
+          const unitNorm = unitStr.replace(/^(CASA|APTO|APARTAMENTO|AP)\s*/, '').trim();
+          return unitNorm === normalizedInput || unitStr === cleanVal || unitNorm === cleanVal || unitStr === normalizedInput;
+        });
+        if (matched.length > 0) {
+          residents = matched.map(p => ({
+            id: p.id,
+            unit: p.unit || normalizedInput,
+            residentName: p.residentName || 'Morador',
+            primaryPhone: p.primaryPhone || '',
+            active: true
+          }));
         }
-      } catch (err) {
-        console.error('Error fetching units/residents:', err);
       }
 
+      // Fallback 1: Query database units/residents
+      if (residents.length === 0) {
+        try {
+          const { data: units, error: unitErr } = await supabase
+            .from('unidades')
+            .select('*')
+            .or(`numero.eq.${normalizedInput},numero.ilike.%${normalizedInput}%`);
+
+          if (units && units.length > 0) {
+            const unitIds = units.map(u => u.id);
+            const { data: morad, error: moradErr } = await supabase
+              .from('moradores')
+              .select('*')
+              .in('unidade_id', unitIds);
+
+            if (morad) {
+              const activeMorad = morad.filter(m => m.ativo !== false && m.active !== false);
+              residents = activeMorad.map(m => ({
+                id: m.id,
+                unit: units.find(u => u.id === m.unidade_id)?.numero || normalizedInput,
+                residentName: m.nome || m.name || 'Morador',
+                primaryPhone: m.telefone || m.phone || '',
+                active: true
+              }));
+            }
+          }
+        } catch (err) {
+          console.error('Error fetching units/residents:', err);
+        }
+      }
+
+      // Fallback 2: Query database fallback profiles (perfis)
       if (residents.length === 0) {
         try {
           const { data: profiles, error: profErr } = await supabase
@@ -279,7 +303,7 @@ export function QuickActions({
       isCurrent = false;
       clearTimeout(handler);
     };
-  }, [casaValues.delivery, casaValues.visitor]);
+  }, [casaValues.delivery, casaValues.visitor, casaValues.uber]);
 
   const selecionarMorador = (type: AccessType, res: any, shouldFocus = true) => {
     console.log('[Diagnostic] selecionarMorador chamado no QuickActions:', type, res);
@@ -435,17 +459,19 @@ export function QuickActions({
     let solName: string | undefined = undefined;
     let solId: string | undefined = undefined;
 
-    if (solicitanteState.activeType === type && solicitanteState.confirmed) {
+    if (solicitanteState.activeType === type) {
       if (solicitanteState.isManual) {
         solName = solicitanteState.manualName || 'Morador';
       } else if (solicitanteState.residents.length > 0) {
-        const selRes = solicitanteState.residents[solicitanteState.selectedIndex];
+        const selRes = solicitanteState.residents[solicitanteState.selectedIndex] || solicitanteState.residents[0];
         if (selRes) {
           solName = selRes.residentName;
           solId = selRes.id;
         }
       }
-    } else {
+    }
+
+    if (!solName) {
       const fallback = (unitPhones || []).filter((p: any) => p.unit.toUpperCase() === unit.toUpperCase() && p.active !== false);
       if (fallback.length > 0) {
         solName = fallback[0].residentName;
@@ -586,6 +612,23 @@ export function QuickActions({
         const isDelivery = action.id === 'delivery';
         const isDraggingThis = (isUber && isDragOverUber) || (isDelivery && isDragOverDelivery);
         const currentCasaValue = casaValues[action.id as AccessType] || '';
+        let cardResidentName = '';
+        if (solicitanteState.activeType === action.id) {
+          if (solicitanteState.isManual) {
+            cardResidentName = solicitanteState.manualName || 'Morador';
+          } else if (solicitanteState.residents.length > 0) {
+            const selRes = solicitanteState.residents[solicitanteState.selectedIndex];
+            cardResidentName = selRes ? selRes.residentName : '';
+          }
+        } else {
+          const val = currentCasaValue.trim();
+          if (val && unitPhones) {
+            const matched = unitPhones.filter((p: any) => p.unit.toUpperCase() === val.toUpperCase() && p.active !== false);
+            if (matched.length > 0) {
+              cardResidentName = matched[0].residentName;
+            }
+          }
+        }
 
         const handleCardClick = (e: React.MouseEvent) => {
           if (isUber && uberPrintAttached) {
@@ -624,6 +667,7 @@ export function QuickActions({
             onDrop={(isUber || isDelivery) ? handleDrop(action.id as AccessType) : undefined}
             className={cn(
               "flex items-center justify-center rounded-xl transition-all active:scale-[0.98] shadow-md relative group border-2 font-bold gap-2 sm:gap-3 cursor-pointer select-none",
+              solicitanteState.activeType === action.id ? "z-30" : "z-10",
               compact ? "flex-col p-2 h-16 sm:h-20" : (isUber ? "p-4" : "flex-row sm:flex-col p-3 sm:p-4 h-auto"),
               isDraggingThis ? "bg-blue-600 border-dashed border-blue-400 scale-[1.02] ring-4 ring-blue-500/40 animate-pulse duration-700" : action.color,
               action.hover,
@@ -635,15 +679,16 @@ export function QuickActions({
           >
             <action.icon className={cn(
               "transition-all duration-500 shrink-0",
+              !isUber && "sm:order-1 lg:order-none",
               compact ? "w-4 h-4 sm:w-5 h-5" : (isUber ? "w-6 h-6 sm:w-7 h-7" : "w-6 h-6 sm:w-8 h-8")
             )} />
-            <div className={cn("flex flex-col items-center", isUber && "sm:flex-row sm:gap-2")}>
+            <div className={cn("flex flex-col items-center", !isUber && "sm:order-2 lg:order-none", isUber && "sm:flex-row sm:gap-2")}>
               <span className={cn(
                 "uppercase tracking-[0.2em] flex items-center gap-1 sm:gap-2 transition-all duration-500",
                 compact ? "text-[8px] sm:text-[9px]" : (isUber ? "text-sm sm:text-base" : "text-xs sm:text-sm")
               )}>
                 {isDraggingThis ? "📥 SOLTE O PRINT AQUI!" : (
-                  isUber && uberPrintAttached ? (
+                   isUber && uberPrintAttached ? (
                     <span className="flex items-center gap-1.5 bg-emerald-500 text-white border border-emerald-400 px-2 py-0.5 rounded-full text-[9px] font-black tracking-widest animate-pulse">
                       📷 PRINT ANEXADO
                     </span>
@@ -655,6 +700,11 @@ export function QuickActions({
                   </span>
                 )}
               </span>
+              {cardResidentName && (
+                <span className="text-[9px] font-black text-amber-300 uppercase tracking-tight mt-0.5 animate-pulse line-clamp-1 max-w-[140px] text-center">
+                  👤 {cardResidentName}
+                </span>
+              )}
               {isFocused && !compact && !isUber && (
                 <span className="text-[8px] font-black uppercase tracking-widest mt-1 opacity-80 animate-pulse">ENTER para abrir</span>
               )}
@@ -678,7 +728,7 @@ export function QuickActions({
                     e.stopPropagation();
                     setAvisarMorador(!avisarMorador);
                   }}
-                  className="absolute bottom-1 left-1 flex items-center gap-1 bg-black/25 hover:bg-black/40 focus-within:bg-black/55 px-1.5 py-0.5 rounded border border-white/10 transition-colors text-white/70 hover:text-white cursor-pointer select-none outline-none"
+                  className="absolute bottom-1 left-1 sm:static sm:order-4 sm:w-full sm:justify-center lg:absolute lg:bottom-1 lg:left-1 lg:w-auto lg:order-none flex items-center gap-1 bg-black/25 hover:bg-black/40 focus-within:bg-black/55 px-1.5 py-0.5 rounded border border-white/10 transition-colors text-white/70 hover:text-white cursor-pointer select-none outline-none"
                 >
                   <span className="text-[10px] leading-none text-white/90">{avisarMorador ? '●' : '◯'}</span>
                   <span className="text-[8px] font-black uppercase tracking-wider">Avisar Morador</span>
@@ -686,7 +736,7 @@ export function QuickActions({
 
                 {/* Right side: CASA & QTD */}
                 <div 
-                  className="absolute bottom-1 right-1 flex items-center gap-1 bg-black/25 hover:bg-black/40 focus-within:bg-black/55 px-1.5 py-0.5 rounded border border-white/10 transition-colors"
+                  className="absolute bottom-1 right-1 sm:static sm:order-3 sm:w-full sm:justify-between lg:absolute lg:bottom-1 lg:right-1 lg:w-auto lg:order-none flex items-center gap-1 bg-black/25 hover:bg-black/40 focus-within:bg-black/55 px-1.5 py-0.5 rounded border border-white/10 transition-colors"
                   onClick={(e) => e.stopPropagation()}
                   onMouseDown={(e) => e.stopPropagation()}
                 >
@@ -794,100 +844,108 @@ export function QuickActions({
             )}
 
             {action.id === 'visitor' && (
-              <div 
-                className="absolute bottom-1 right-1 flex items-center gap-1 bg-black/25 hover:bg-black/40 focus-within:bg-black/55 px-1.5 py-0.5 rounded border border-white/10 transition-colors"
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                {/* OVERLAY FOR RESIDENTS SELECTOR */}
-                {solicitanteState.activeType === 'visitor' && solicitanteState.residents.length > 1 && !solicitanteState.confirmed && (
-                  <div className="absolute right-0 bottom-8 z-50 bg-slate-900 border border-slate-700 rounded-lg p-1.5 shadow-2xl flex flex-col gap-1 w-44 text-left">
-                    <div className="text-[8px] font-black uppercase text-slate-400 px-1">Selecione o Morador:</div>
-                    {solicitanteState.residents.map((r, idx) => (
+              <>
+                <div 
+                  className="absolute bottom-1 right-1 sm:static sm:order-3 sm:w-full sm:justify-between lg:absolute lg:bottom-1 lg:right-1 lg:w-auto lg:order-none flex items-center gap-1 bg-black/25 hover:bg-black/40 focus-within:bg-black/55 px-1.5 py-0.5 rounded border border-white/10 transition-colors"
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  {/* OVERLAY FOR RESIDENTS SELECTOR */}
+                  {solicitanteState.activeType === 'visitor' && solicitanteState.residents.length > 1 && !solicitanteState.confirmed && (
+                    <div className="absolute right-0 bottom-8 z-50 bg-slate-900 border border-slate-700 rounded-lg p-1.5 shadow-2xl flex flex-col gap-1 w-44 text-left">
+                      <div className="text-[8px] font-black uppercase text-slate-400 px-1">Selecione o Morador:</div>
+                      {solicitanteState.residents.map((r, idx) => (
+                        <div
+                          key={r.id}
+                          className={cn(
+                            "px-2 py-1 rounded text-[10px] font-black cursor-pointer flex justify-between items-center",
+                            idx === solicitanteState.selectedIndex ? "bg-amber-400 text-slate-900" : "text-white hover:bg-slate-800"
+                          )}
+                          onClick={() => selecionarMorador('visitor', r)}
+                        >
+                          <span>{r.residentName}</span>
+                          {idx === solicitanteState.selectedIndex && <span className="text-[8px]">⏎</span>}
+                        </div>
+                      ))}
                       <div
-                        key={r.id}
-                        className={cn(
-                          "px-2 py-1 rounded text-[10px] font-black cursor-pointer flex justify-between items-center",
-                          idx === solicitanteState.selectedIndex ? "bg-amber-400 text-slate-900" : "text-white hover:bg-slate-800"
-                        )}
-                        onClick={() => selecionarMorador('visitor', r)}
+                        onClick={() => setSolicitanteState(prev => ({ ...prev, isManual: true }))}
+                        className="text-[8px] text-amber-400 font-bold px-1 pt-1 border-t border-slate-800 hover:text-amber-300 cursor-pointer"
                       >
-                        <span>{r.residentName}</span>
-                        {idx === solicitanteState.selectedIndex && <span className="text-[8px]">⏎</span>}
+                        F2: Informar Manualmente
                       </div>
-                    ))}
-                    <div
-                      onClick={() => setSolicitanteState(prev => ({ ...prev, isManual: true }))}
-                      className="text-[8px] text-amber-400 font-bold px-1 pt-1 border-t border-slate-800 hover:text-amber-300 cursor-pointer"
-                    >
-                      F2: Informar Manualmente
                     </div>
-                  </div>
-                )}
-
-                {solicitanteState.activeType === 'visitor' && solicitanteState.isManual && !solicitanteState.confirmed && (
-                  <div className="absolute right-0 bottom-8 z-50 bg-slate-900 border border-slate-700 rounded-lg p-2 shadow-2xl flex flex-col gap-1 w-44 text-left">
-                    <div className="text-[8px] font-black uppercase text-slate-400">Nome do Solicitante (Manual):</div>
-                    <input
-                      autoFocus
-                      type="text"
-                      className="w-full h-[24px] bg-slate-800 text-white text-[10px] px-1.5 rounded border border-slate-600 focus:outline-none focus:border-amber-400 font-bold"
-                      value={solicitanteState.manualName}
-                      onChange={(e) => setSolicitanteState(prev => ({ ...prev, manualName: e.target.value }))}
-                      onKeyDown={(e) => {
-                        e.stopPropagation();
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          setSolicitanteState(prev => ({ ...prev, confirmed: true }));
-                          advanceQuickFocus('visitor');
-                        }
-                      }}
-                    />
-                  </div>
-                )}
-
-                <span className="text-[8px] font-black uppercase tracking-wider text-white/80 shrink-0">Casa</span>
-                <input
-                  type="text"
-                  placeholder="---"
-                  className={cn(
-                    "bg-white/95 text-slate-900 border-none rounded text-center text-[10px] font-black p-0 focus:outline-none focus:ring-1 focus:ring-amber-400 placeholder:text-slate-400 font-sans",
-                    'w-8'
                   )}
-                  value={currentCasaValue}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    handleUnitChange('visitor', e.target.value);
-                  }}
-                  onKeyDown={(e) => {
-                    e.stopPropagation();
-                    handleUnitKeyDown(e, 'visitor');
-                  }}
-                />
-                <span className="text-[8px] font-black uppercase tracking-wider text-white/80 shrink-0">Qtd</span>
-                <input
-                  ref={visitorQtyRef}
-                  type="text"
-                  placeholder="1"
-                  className="w-5 h-4 bg-white/95 text-slate-900 border-none rounded text-center text-[10px] font-black p-0 focus:outline-none focus:ring-1 focus:ring-amber-400 placeholder:text-slate-400 font-sans shrink-0"
-                  value={visitorQty}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    const val = e.target.value.replace(/\D/g, '');
-                    setVisitorQty(val);
-                  }}
-                  onKeyDown={(e) => {
-                    e.stopPropagation();
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      const val = currentCasaValue.trim();
-                      if (val) {
-                        handleImmediateRelease('visitor', val, e.currentTarget);
+
+                  {solicitanteState.activeType === 'visitor' && solicitanteState.isManual && !solicitanteState.confirmed && (
+                    <div className="absolute right-0 bottom-8 z-50 bg-slate-900 border border-slate-700 rounded-lg p-2 shadow-2xl flex flex-col gap-1 w-44 text-left">
+                      <div className="text-[8px] font-black uppercase text-slate-400">Nome do Solicitante (Manual):</div>
+                      <input
+                        autoFocus
+                        type="text"
+                        className="w-full h-[24px] bg-slate-800 text-white text-[10px] px-1.5 rounded border border-slate-600 focus:outline-none focus:border-amber-400 font-bold"
+                        value={solicitanteState.manualName}
+                        onChange={(e) => setSolicitanteState(prev => ({ ...prev, manualName: e.target.value }))}
+                        onKeyDown={(e) => {
+                          e.stopPropagation();
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            setSolicitanteState(prev => ({ ...prev, confirmed: true }));
+                            advanceQuickFocus('visitor');
+                          }
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  <span className="text-[8px] font-black uppercase tracking-wider text-white/80 shrink-0">Casa</span>
+                  <input
+                    type="text"
+                    placeholder="---"
+                    className={cn(
+                      "bg-white/95 text-slate-900 border-none rounded text-center text-[10px] font-black p-0 focus:outline-none focus:ring-1 focus:ring-amber-400 placeholder:text-slate-400 font-sans",
+                      'w-8'
+                    )}
+                    value={currentCasaValue}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      handleUnitChange('visitor', e.target.value);
+                    }}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      handleUnitKeyDown(e, 'visitor');
+                    }}
+                  />
+                  <span className="text-[8px] font-black uppercase tracking-wider text-white/80 shrink-0">Qtd</span>
+                  <input
+                    ref={visitorQtyRef}
+                    type="text"
+                    placeholder="1"
+                    className="w-5 h-4 bg-white/95 text-slate-900 border-none rounded text-center text-[10px] font-black p-0 focus:outline-none focus:ring-1 focus:ring-amber-400 placeholder:text-slate-400 font-sans shrink-0"
+                    value={visitorQty}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      const val = e.target.value.replace(/\D/g, '');
+                      setVisitorQty(val);
+                    }}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const val = currentCasaValue.trim();
+                        if (val) {
+                          handleImmediateRelease('visitor', val, e.currentTarget);
+                        }
                       }
-                    }
-                  }}
-                />
-              </div>
+                    }}
+                  />
+                </div>
+
+                {/* Hidden layout placeholder to mirror "Avisar Morador" button height & padding, aligning cards perfectly */}
+                <div className="hidden sm:flex lg:hidden invisible sm:static sm:order-4 sm:w-full sm:justify-center items-center gap-1 px-1.5 py-0.5 border border-transparent select-none pointer-events-none">
+                  <span className="text-[10px] leading-none">◯</span>
+                  <span className="text-[8px] font-black uppercase tracking-wider">Avisar Morador</span>
+                </div>
+              </>
             )}
 
             {action.id === 'uber' && uberPrintAttached && (

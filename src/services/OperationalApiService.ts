@@ -1,7 +1,7 @@
 import { AccessType, PreAuthorization, WpApiStatus } from '../types';
 
 /**
- * Portaria Pro - API Invisible Architecture
+ * ACCEPASS - API Invisible Architecture
  * 
  * This service is prepared for future bidirectional synchronization with external APIs
  * such as official WhatsApp Business API, AI Agents, or IoT Hardware.

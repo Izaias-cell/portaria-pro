@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { AccessRecord, FrequentVisitor, PreAuthorization, AccessType, DeliverySubtype, AccessRule, PreAuthStatus, UnitPhone, UnitRules, CondoInfo, AdminUser, SystemSettings, MessageTemplates, PermanentProfile, Porteiro } from '../types';
+import { AccessRecord, FrequentVisitor, PreAuthorization, AccessType, DeliverySubtype, AccessRule, PreAuthStatus, UnitPhone, UnitRules, CondoInfo, AdminUser, SystemSettings, MessageTemplates, PermanentProfile, Porteiro, Condominio } from '../types';
 import { WhatsAppService, WhatsAppMessage } from '../services/WhatsAppService';
 import { UnitPhoneManager } from './UnitPhoneManager';
 import { UnitRulesManager } from './UnitRulesManager';
@@ -56,7 +56,9 @@ import {
   ClipboardList,
   Star,
   Plus,
-  Truck
+  Truck,
+  CreditCard,
+  Activity
 } from 'lucide-react';
 import { format, isToday, startOfDay, endOfDay, isWithinInterval, subDays, startOfMonth, subWeeks } from 'date-fns';
 import * as XLSX from 'xlsx';
@@ -95,6 +97,8 @@ interface AdminPanelProps {
   permanentProfiles?: PermanentProfile[];
   porteiros: Porteiro[];
   onUpdatePorteiros: (porteiros: Porteiro[]) => void;
+  condominios?: Condominio[];
+  onUpdateCondominios?: (condos: Condominio[]) => void;
   loggedPorterName?: string;
   onRegisterOperationalLog: (action: string) => void;
   onUpdateFrequents: (visitors: FrequentVisitor[]) => void;
@@ -152,7 +156,7 @@ function RestrictedScreen({ onBack, areaName }: RestrictedScreenProps) {
   );
 }
 
-type AdminSubView = 'dashboard' | 'history' | 'banco_entregadores' | 'banco_visitantes' | 'units' | 'frequents' | 'preauths' | 'whatsapp' | 'phones' | 'rules' | 'reports' | 'config' | 'emergencia' | 'porteiros' | 'security_center';
+type AdminSubView = 'dashboard' | 'history' | 'banco_entregadores' | 'banco_visitantes' | 'units' | 'frequents' | 'preauths' | 'whatsapp' | 'phones' | 'rules' | 'reports' | 'config' | 'emergencia' | 'porteiros' | 'security_center' | 'gestao_condominios';
 
 export function AdminPanel({ 
   records, 
@@ -167,6 +171,8 @@ export function AdminPanel({
   permanentProfiles = [],
   porteiros,
   onUpdatePorteiros,
+  condominios = [],
+  onUpdateCondominios = () => {},
   loggedPorterName = '',
   onRegisterOperationalLog,
   onUpdateFrequents, 
@@ -904,7 +910,7 @@ export function AdminPanel({
     doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(15);
-    doc.text('PORTARIA PRO - RELATÓRIO DO SÍNDICO PARA AUDITORIA (LGPD)', 14, 18);
+    doc.text('ACCEPASS - RELATÓRIO DO SÍNDICO PARA AUDITORIA (LGPD)', 14, 18);
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
@@ -980,7 +986,7 @@ export function AdminPanel({
       yPosition += 52;
     });
 
-    doc.save(`relatorio_auditoria_portariapro_${format(new Date(), 'yyyy-MM-dd_HHmm')}.pdf`);
+    doc.save(`relatorio_auditoria_accepass_${format(new Date(), 'yyyy-MM-dd_HHmm')}.pdf`);
     toast.success('Relatório completo em PDF exportado com sucesso!', {
       description: 'Documento gerado de acordo com as normas de privacidade para o Síndico.'
     });
@@ -1000,16 +1006,14 @@ export function AdminPanel({
             { id: 'banco_entregadores', label: 'Banco de Entregadores', icon: Bike },
             { id: 'history', label: 'Histórico Operacional', icon: History },
             ...(userRole === 'admin' && !isOperationalControl ? [
+              { id: 'gestao_condominios' as const, label: 'Gestão de Condomínios', icon: Building },
               { id: 'porteiros' as const, label: 'Gestão de Usuários', icon: ShieldCheck }
             ] : []),
             ...(userRole !== 'sindico' ? [
               { id: 'phones' as const, label: 'Telefones', icon: Phone }
             ] : []),
-            { id: 'rules', label: 'Regras por unidade', icon: Shield },
-            { id: 'frequents', label: 'Frequentes', icon: Users },
-            { id: 'preauths', label: 'Pré-autorizações', icon: Calendar },
             ...(userRole === 'sindico' || userRole === 'admin' ? [{ id: 'reports' as const, label: 'Relatórios', icon: FileText }] : []),
-            ...(userRole !== 'sindico' ? [
+            ...(userRole !== 'sindico' && !(isOperationalControl && userRole === 'porteiro') ? [
               { id: 'whatsapp' as const, label: 'WhatsApp (Sim)', icon: MessageSquare }
             ] : []),
             ...(!hideTechnicalConfig && userRole !== 'sindico' ? [{ id: 'config' as const, label: 'Configurações', icon: Settings }] : []),
@@ -2663,6 +2667,24 @@ export function AdminPanel({
             )
           )}
 
+          {/* GESTÃO DE CONDOMÍNIOS VIEW */}
+          {subView === 'gestao_condominios' && (
+            userRole !== 'admin' ? (
+              <RestrictedScreen onBack={() => setSubView('emergencia')} areaName="Gestão de Condomínios" />
+            ) : (
+              <GestaoCondominiosView 
+                condominios={condominios}
+                onUpdateCondominios={onUpdateCondominios}
+                porteiros={porteiros}
+                onUpdatePorteiros={onUpdatePorteiros}
+                globalSystemSettings={systemSettings}
+                onUpdateGlobalSystemSettings={onUpdateSystemSettings}
+                loggedPorterName={loggedPorterName}
+                onUpdateGlobalCondoInfo={onUpdateCondoInfo}
+              />
+            )
+          )}
+
           {/* CONFIG VIEW */}
           {subView === 'config' && (
             (userRole === 'sindico' || hideTechnicalConfig) ? (
@@ -3337,57 +3359,6 @@ function ConfigView({
   return (
     <div className="space-y-8 pb-12">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* CONDO INFO */}
-        <div className="space-y-4">
-          <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-            <Building className="w-4 h-4 text-blue-500" />
-            Dados do Condomínio
-          </h3>
-          <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
-            <form onSubmit={handleSaveCondo} className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome do Condomínio</label>
-                <input 
-                  type="text" 
-                  value={editingCondo.name}
-                  onChange={e => setEditingCondo({...editingCondo, name: e.target.value})}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
-                  placeholder="Ex: Residencial Portaria Pro"
-                  required
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome do Síndico Responsável</label>
-                <input 
-                  type="text" 
-                  value={editingCondo.managerName}
-                  onChange={e => setEditingCondo({...editingCondo, managerName: e.target.value})}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
-                  placeholder="Ex: João Silva"
-                  required
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Endereço Completo</label>
-                <textarea 
-                  value={editingCondo.address}
-                  onChange={e => setEditingCondo({...editingCondo, address: e.target.value})}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none min-h-[100px] resize-none"
-                  placeholder="Avenida Exemplo, 123..."
-                  required
-                />
-              </div>
-              <button 
-                type="submit"
-                className="w-full bg-blue-600 text-white rounded-xl py-3.5 font-black text-[11px] uppercase tracking-widest hover:bg-blue-700 active:scale-[0.98] transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2"
-              >
-                <Save className="w-4 h-4" />
-                Salvar Alterações
-              </button>
-            </form>
-          </div>
-        </div>
-
         {/* OPERATIONAL SETTINGS */}
         <div className="space-y-4">
           <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
@@ -3483,9 +3454,7 @@ function ConfigView({
             </button>
           </div>
         </div>
-      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* ACCESS CONTROL (PERMISSIONS) */}
         <div className="space-y-4">
           <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
@@ -3987,6 +3956,1220 @@ const AdminUserCard: React.FC<AdminUserCardProps> = ({ user, onEdit, onToggle, o
         <Power className="w-3.5 h-3.5" />
         {user.active ? 'Suspender Usuário' : 'Ativar Usuário'}
       </button>
+    </div>
+  );
+}
+
+interface GestaoCondominiosProps {
+  condominios: Condominio[];
+  onUpdateCondominios: (condos: Condominio[]) => void;
+  porteiros: Porteiro[];
+  onUpdatePorteiros: (porteiros: Porteiro[]) => void;
+  globalSystemSettings: SystemSettings;
+  onUpdateGlobalSystemSettings: (settings: SystemSettings) => void;
+  loggedPorterName?: string;
+  onUpdateGlobalCondoInfo?: (info: CondoInfo) => void;
+}
+
+function GestaoCondominiosView({
+  condominios,
+  onUpdateCondominios,
+  porteiros,
+  onUpdatePorteiros,
+  globalSystemSettings,
+  onUpdateGlobalSystemSettings,
+  loggedPorterName,
+  onUpdateGlobalCondoInfo,
+}: GestaoCondominiosProps) {
+  const [selectedCondoId, setSelectedCondoId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newCondoName, setNewCondoName] = useState('');
+  const [newCondoManager, setNewCondoManager] = useState('');
+  const [newCondoAddress, setNewCondoAddress] = useState('');
+
+  // Tab State for selected condo management panel
+  const [activeTab, setActiveTab] = useState<'dados' | 'usuarios' | 'config' | 'plano' | 'historico'>('dados');
+
+  // Plan info state
+  const [planInfo, setPlanInfo] = useState({
+    planType: 'Premium',
+    licenseStatus: 'Ativo',
+    startDate: '',
+    endDate: '',
+  });
+
+  // Audit logs state
+  const [auditLogs, setAuditLogs] = useState<{ id: string; timestamp: string; user: string; description: string }[]>([]);
+
+  // States for Editing selected condo details
+  const [editingName, setEditingName] = useState('');
+  const [editingManager, setEditingManager] = useState('');
+  const [editingAddress, setEditingAddress] = useState('');
+
+  // Selected condo configuration
+  const [condoSettings, setCondoSettings] = useState({
+    allowFrequentDirectRelease: true,
+    allowAutoDeliveryRelease: true,
+    requireDocument: false,
+    confirmWithResident: false,
+  });
+
+  // State for adding a new user linked to selected condo
+  const [showAddUserForm, setShowAddUserForm] = useState(false);
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserPin, setNewUserPin] = useState('');
+  const [newUserRole, setNewUserRole] = useState<'porteiro' | 'sindico' | 'admin'>('porteiro');
+  const [newUserPhone, setNewUserPhone] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+
+  // Editing condo name in list
+  const [editingListCondoId, setEditingListCondoId] = useState<string | null>(null);
+  const [editingListCondoName, setEditingListCondoName] = useState('');
+
+  // Helper to record audit logs for the selected condominium
+  const addAuditLog = (description: string) => {
+    if (!selectedCondoId) return;
+    const storedLogs = localStorage.getItem(`portaria_condo_audit_${selectedCondoId}`);
+    let logsList: any[] = [];
+    if (storedLogs) {
+      try {
+        logsList = JSON.parse(storedLogs);
+      } catch (e) {}
+    }
+    const newLog = {
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      user: loggedPorterName || 'Administrador',
+      description,
+    };
+    logsList.unshift(newLog);
+    localStorage.setItem(`portaria_condo_audit_${selectedCondoId}`, JSON.stringify(logsList));
+    setAuditLogs(logsList);
+  };
+
+  const selectedCondo = useMemo(() => {
+    return condominios.find(c => c.id === selectedCondoId) || null;
+  }, [condominios, selectedCondoId]);
+
+  // Load selected condo details when selection changes
+  useEffect(() => {
+    if (selectedCondoId) {
+      const stored = localStorage.getItem(`portaria_condo_info_${selectedCondoId}`);
+      if (stored) {
+        try {
+          const info = JSON.parse(stored);
+          setEditingName(info.name || '');
+          setEditingManager(info.managerName || '');
+          setEditingAddress(info.address || '');
+        } catch (e) {
+          setEditingName(selectedCondo?.nome || '');
+          setEditingManager('');
+          setEditingAddress('');
+        }
+      } else {
+        // Fallback or default
+        setEditingName(selectedCondo?.nome || '');
+        // Special case for Belle Ville to pre-populate with existing info
+        if (selectedCondo?.nome.toUpperCase() === 'BELLE VILLE') {
+          const mainStored = localStorage.getItem('portaria_condo_info');
+          if (mainStored) {
+            try {
+              const info = JSON.parse(mainStored);
+              setEditingName(info.name || 'BELLE VILLE');
+              setEditingManager(info.managerName || 'Antônio Carlos');
+              setEditingAddress(info.address || 'Rua das Flores, 426');
+              // Save it to keep it persistent for Belle Ville individually
+              localStorage.setItem(`portaria_condo_info_${selectedCondoId}`, mainStored);
+            } catch (err) {
+              setEditingManager('Antônio Carlos');
+              setEditingAddress('Rua das Flores, 426');
+            }
+          } else {
+            setEditingManager('Antônio Carlos');
+            setEditingAddress('Rua das Flores, 426');
+          }
+        } else {
+          setEditingManager('');
+          setEditingAddress('');
+        }
+      }
+
+      // Load specific condo settings
+      const storedSettings = localStorage.getItem(`portaria_condo_settings_${selectedCondoId}`);
+      if (storedSettings) {
+        try {
+          setCondoSettings(JSON.parse(storedSettings));
+        } catch (e) {
+          setCondoSettings({
+            allowFrequentDirectRelease: globalSystemSettings.allowFrequentDirectRelease,
+            allowAutoDeliveryRelease: globalSystemSettings.allowAutoDeliveryRelease,
+            requireDocument: false,
+            confirmWithResident: false,
+          });
+        }
+      } else {
+        setCondoSettings({
+          allowFrequentDirectRelease: globalSystemSettings.allowFrequentDirectRelease,
+          allowAutoDeliveryRelease: globalSystemSettings.allowAutoDeliveryRelease,
+          requireDocument: false,
+          confirmWithResident: false,
+        });
+      }
+
+      // Load plan info
+      const storedPlan = localStorage.getItem(`portaria_condo_plan_${selectedCondoId}`);
+      if (storedPlan) {
+        try {
+          setPlanInfo(JSON.parse(storedPlan));
+        } catch (e) {
+          setPlanInfo({
+            planType: 'Premium',
+            licenseStatus: 'Ativo',
+            startDate: new Date().toISOString().split('T')[0],
+            endDate: '2027-12-31'
+          });
+        }
+      } else {
+        const defaultPlan = {
+          planType: 'Premium',
+          licenseStatus: 'Ativo',
+          startDate: new Date().toISOString().split('T')[0],
+          endDate: '2027-12-31'
+        };
+        localStorage.setItem(`portaria_condo_plan_${selectedCondoId}`, JSON.stringify(defaultPlan));
+        setPlanInfo(defaultPlan);
+      }
+
+      // Load audit logs
+      const storedAudit = localStorage.getItem(`portaria_condo_audit_${selectedCondoId}`);
+      if (storedAudit) {
+        try {
+          setAuditLogs(JSON.parse(storedAudit));
+        } catch (e) {
+          setAuditLogs([]);
+        }
+      } else {
+        setAuditLogs([]);
+      }
+
+      setShowAddUserForm(false);
+      setNewUserName('');
+      setNewUserPin('');
+      setNewUserRole('porteiro');
+      setNewUserPhone('');
+      setNewUserEmail('');
+    }
+  }, [selectedCondoId, selectedCondo, globalSystemSettings]);
+
+  // Reset active tab ONLY when the selected condominium actually changes
+  useEffect(() => {
+    if (selectedCondoId) {
+      setActiveTab('dados');
+    }
+  }, [selectedCondoId]);
+
+  // Filter condominiums by search
+  const filteredCondos = useMemo(() => {
+    return condominios.filter(c => 
+      c.nome.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [condominios, searchTerm]);
+
+  // Handler for adding new condo
+  const handleAddCondo = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCondoName.trim()) {
+      toast.error('O nome do condomínio é obrigatório.');
+      return;
+    }
+
+    const newId = crypto.randomUUID();
+    const newCondoObj: Condominio = {
+      id: newId,
+      nome: newCondoName.trim().toUpperCase(),
+    };
+
+    // Save condo info specifically
+    const infoObj = {
+      id: newId,
+      name: newCondoName.trim().toUpperCase(),
+      managerName: newCondoManager.trim() || 'Síndico Responsável',
+      address: newCondoAddress.trim() || 'Endereço do Condomínio',
+    };
+    localStorage.setItem(`portaria_condo_info_${newId}`, JSON.stringify(infoObj));
+
+    // Save initial condo settings specifically
+    const settingsObj = {
+      allowFrequentDirectRelease: globalSystemSettings.allowFrequentDirectRelease,
+      allowAutoDeliveryRelease: globalSystemSettings.allowAutoDeliveryRelease,
+      requireDocument: false,
+      confirmWithResident: false,
+    };
+    localStorage.setItem(`portaria_condo_settings_${newId}`, JSON.stringify(settingsObj));
+
+    onUpdateCondominios([...condominios, newCondoObj]);
+    
+    // Reset fields
+    setNewCondoName('');
+    setNewCondoManager('');
+    setNewCondoAddress('');
+    setShowAddModal(false);
+    toast.success('Condomínio cadastrado com sucesso!');
+  };
+
+  // Handler for saving selected condo details
+  const handleSaveSelectedCondo = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingName.trim()) {
+      toast.error('O nome do condomínio é obrigatório.');
+      return;
+    }
+
+    const cleanedName = editingName.trim().toUpperCase();
+
+    // Update in condominios list
+    const updated = condominios.map(c => 
+      c.id === selectedCondoId ? { ...c, nome: cleanedName } : c
+    );
+    onUpdateCondominios(updated);
+
+    // Save details
+    const infoObj = {
+      id: selectedCondoId,
+      name: cleanedName,
+      managerName: editingManager.trim(),
+      address: editingAddress.trim(),
+    };
+    localStorage.setItem(`portaria_condo_info_${selectedCondoId}`, JSON.stringify(infoObj));
+
+    // Update global app state if the current selected condo is updated
+    if (onUpdateGlobalCondoInfo) {
+      onUpdateGlobalCondoInfo({
+        name: cleanedName,
+        managerName: editingManager.trim(),
+        address: editingAddress.trim(),
+      });
+    }
+
+    addAuditLog(`Dados cadastrais atualizados: Nome="${cleanedName}", Síndico="${editingManager.trim()}"`);
+    toast.success('Dados do condomínio salvos!');
+  };
+
+  // Handler for saving selected condo operational settings
+  const handleSaveCondoSettings = () => {
+    localStorage.setItem(`portaria_condo_settings_${selectedCondoId}`, JSON.stringify(condoSettings));
+    addAuditLog('Configurações de funcionamento do condomínio atualizadas');
+    toast.success('Configurações do condomínio salvas!');
+  };
+
+  // Handler for saving plan / license details
+  const handleSavePlanDetails = (e: React.FormEvent) => {
+    e.preventDefault();
+    localStorage.setItem(`portaria_condo_plan_${selectedCondoId}`, JSON.stringify(planInfo));
+    addAuditLog(`Plano / Licença atualizados: Plano="${planInfo.planType}", Status="${planInfo.licenseStatus}"`);
+    toast.success('Plano / Licença do condomínio atualizados com sucesso!');
+  };
+
+  // Handler for deleting a condo
+  const handleDeleteCondo = (condoId: string, condoName: string) => {
+    if (confirm(`Tem certeza de que deseja excluir o condomínio "${condoName}"? Esta ação removerá o condomínio e suas configurações.`)) {
+      const updated = condominios.filter(c => c.id !== condoId);
+      onUpdateCondominios(updated);
+
+      // Clean up local storage
+      localStorage.removeItem(`portaria_condo_info_${condoId}`);
+      localStorage.removeItem(`portaria_condo_settings_${condoId}`);
+      localStorage.removeItem(`portaria_condo_plan_${condoId}`);
+      localStorage.removeItem(`portaria_condo_audit_${condoId}`);
+
+      // Also disconnect users or warn? Let's keep existing users but remove their association
+      const updatedPorteiros = porteiros.map(p => 
+        p.condominio_id === condoId ? { ...p, condominio_id: '', condoName: '' } : p
+      );
+      onUpdatePorteiros(updatedPorteiros);
+
+      toast.success(`Condomínio "${condoName}" excluído.`);
+    }
+  };
+
+  // Handler for saving list inline name edit
+  const handleSaveListCondoName = (condoId: string) => {
+    if (!editingListCondoName.trim()) {
+      toast.error('O nome do condomínio não pode ser vazio.');
+      return;
+    }
+
+    const cleanedName = editingListCondoName.trim().toUpperCase();
+
+    const updated = condominios.map(c => 
+      c.id === condoId ? { ...c, nome: cleanedName } : c
+    );
+    onUpdateCondominios(updated);
+
+    // Update specific storage info name too if exists
+    const stored = localStorage.getItem(`portaria_condo_info_${condoId}`);
+    if (stored) {
+      try {
+        const info = JSON.parse(stored);
+        info.name = cleanedName;
+        localStorage.setItem(`portaria_condo_info_${condoId}`, JSON.stringify(info));
+      } catch (e) {}
+    }
+
+    // Write to audit log if this happens to be the selected condo
+    if (condoId === selectedCondoId) {
+      addAuditLog(`Nome do condomínio alterado na lista para "${cleanedName}"`);
+    } else {
+      // Record a log for the specific condo being renamed
+      const storedLogs = localStorage.getItem(`portaria_condo_audit_${condoId}`);
+      let logsList: any[] = [];
+      if (storedLogs) {
+        try { logsList = JSON.parse(storedLogs); } catch (e) {}
+      }
+      logsList.unshift({
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        user: loggedPorterName || 'Administrador',
+        description: `Nome do condomínio alterado na lista para "${cleanedName}"`,
+      });
+      localStorage.setItem(`portaria_condo_audit_${condoId}`, JSON.stringify(logsList));
+    }
+
+    setEditingListCondoId(null);
+    toast.success('Nome do condomínio atualizado!');
+  };
+
+  // Handler for adding a new user specifically linked to this selected condo
+  const handleAddLinkedUser = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUserName.trim() || !newUserPin.trim()) {
+      toast.error('Nome e PIN são obrigatórios!');
+      return;
+    }
+
+    // Full name validation
+    const trimmedName = newUserName.trim();
+    const parts = trimmedName.split(/\s+/);
+    if (parts.length < 2) {
+      toast.error('ATENÇÃO: Digite também o sobrenome para prosseguir.');
+      return;
+    }
+
+    const userFullName = trimmedName.toUpperCase();
+
+    const newUser: Porteiro = {
+      id: crypto.randomUUID(),
+      name: userFullName,
+      pin: newUserPin.trim(),
+      role: newUserRole,
+      active: true,
+      condoName: selectedCondo?.nome || '',
+      condominio_id: selectedCondoId || undefined,
+      phone: newUserPhone.trim() || undefined,
+      email: newUserEmail.trim() || undefined
+    };
+
+    onUpdatePorteiros([...porteiros, newUser]);
+    addAuditLog(`Novo usuário criado e vinculado: "${userFullName}" (${newUserRole.toUpperCase()})`);
+    
+    // Reset fields
+    setNewUserName('');
+    setNewUserPin('');
+    setNewUserRole('porteiro');
+    setNewUserPhone('');
+    setNewUserEmail('');
+    setShowAddUserForm(false);
+    toast.success('Novo usuário cadastrado e vinculado com sucesso!');
+  };
+
+  // Handler for toggling status of linked user
+  const handleToggleUserActive = (userId: string) => {
+    const updated = porteiros.map(p => 
+      p.id === userId ? { ...p, active: !p.active } : p
+    );
+    onUpdatePorteiros(updated);
+    const userObj = porteiros.find(p => p.id === userId);
+    if (userObj) {
+      const nextActiveState = !userObj.active;
+      addAuditLog(`Status do usuário "${userObj.name}" alterado para ${nextActiveState ? 'ATIVO' : 'SUSPENSO'}`);
+      toast.success(`Usuário ${userObj.name} ${nextActiveState ? 'ativado' : 'suspenso'}!`);
+    }
+  };
+
+  // Handler for deleting/unlinking user
+  const handleDeleteUser = (userId: string, userName: string) => {
+    if (confirm(`Excluir usuário "${userName}" permanentemente?`)) {
+      const updated = porteiros.filter(p => p.id !== userId);
+      onUpdatePorteiros(updated);
+      addAuditLog(`Usuário "${userName}" excluído e desvinculado`);
+      toast.success(`Usuário "${userName}" removido.`);
+    }
+  };
+
+  // Get users linked to selected condo
+  const linkedUsers = useMemo(() => {
+    return porteiros.filter(p => p.condominio_id === selectedCondoId);
+  }, [porteiros, selectedCondoId]);
+
+  return (
+    <div className="space-y-6 pb-12">
+      {selectedCondoId === null ? (
+        // LIST VIEW
+        <div className="space-y-6">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+            <div>
+              <h2 className="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
+                <Building className="w-5 h-5 text-blue-600 animate-pulse" />
+                Gestão de Condomínios
+              </h2>
+              <p className="text-xs text-slate-500 font-medium">Cadastre, edite e gerencie múltiplos condomínios e seus usuários.</p>
+            </div>
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-xl text-xs uppercase tracking-wider transition shadow-lg shadow-blue-100 flex items-center gap-2 cursor-pointer active:scale-95"
+            >
+              <Plus className="w-4 h-4" />
+              Cadastrar Novo Condomínio
+            </button>
+          </div>
+
+          {/* Search Bar */}
+          <div className="relative">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Pesquise por nome do condomínio..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none transition-all shadow-sm placeholder:text-slate-400"
+            />
+          </div>
+
+          {/* Condominiums Grid */}
+          {filteredCondos.length === 0 ? (
+            <div className="bg-white border border-dashed border-slate-200 rounded-3xl p-12 text-center">
+              <Building className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+              <h3 className="text-sm font-black text-slate-700 uppercase tracking-wider">Nenhum condomínio encontrado</h3>
+              <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">Tente refinar sua pesquisa ou cadastre um novo condomínio utilizando o botão acima.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredCondos.map(condo => {
+                // Load manager name for preview
+                let managerName = 'Síndico Responsável';
+                const stored = localStorage.getItem(`portaria_condo_info_${condo.id}`);
+                if (stored) {
+                  try {
+                    managerName = JSON.parse(stored).managerName || managerName;
+                  } catch(e){}
+                } else if (condo.nome.toUpperCase() === 'BELLE VILLE') {
+                  managerName = 'Antônio Carlos';
+                }
+                const condoUsersCount = porteiros.filter(p => p.condominio_id === condo.id).length;
+
+                return (
+                  <div key={condo.id} className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group">
+                    <div>
+                      <div className="flex justify-between items-start mb-4">
+                        <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl group-hover:bg-blue-600 group-hover:text-white transition-all">
+                          <Building className="w-6 h-6" />
+                        </div>
+                        <span className="bg-slate-100 text-slate-500 font-black text-[9px] uppercase tracking-wider px-2.5 py-1 rounded-full flex items-center gap-1">
+                          <Users className="w-3 h-3 text-slate-400" />
+                          {condoUsersCount} {condoUsersCount === 1 ? 'usuário' : 'usuários'}
+                        </span>
+                      </div>
+
+                      {editingListCondoId === condo.id ? (
+                        <div className="space-y-2 mb-4">
+                          <input
+                            type="text"
+                            value={editingListCondoName}
+                            onChange={e => setEditingListCondoName(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                            required
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleSaveListCondoName(condo.id)}
+                              className="px-3 py-1.5 bg-emerald-600 text-white font-black text-[10px] uppercase rounded-lg hover:bg-emerald-700 transition"
+                            >
+                              Salvar
+                            </button>
+                            <button
+                              onClick={() => setEditingListCondoId(null)}
+                              className="px-3 py-1.5 bg-slate-200 text-slate-600 font-black text-[10px] uppercase rounded-lg hover:bg-slate-300 transition"
+                            >
+                              Cancelar
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mb-4">
+                          <h3 className="text-base font-black text-slate-800 uppercase tracking-tight group-hover:text-blue-600 transition-colors">{condo.nome}</h3>
+                          <p className="text-xs text-slate-400 font-medium mt-1">Síndico: <span className="text-slate-600 font-bold">{managerName}</span></p>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col gap-2 mt-4 pt-4 border-t border-slate-50">
+                      <button
+                        onClick={() => setSelectedCondoId(condo.id)}
+                        className="w-full py-3 bg-blue-50 hover:bg-blue-600 text-blue-700 hover:text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-1.5"
+                      >
+                        Selecionar e Gerenciar
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => {
+                            setEditingListCondoId(condo.id);
+                            setEditingListCondoName(condo.nome);
+                          }}
+                          className="flex-1 py-2 border border-slate-100 hover:border-slate-200 hover:bg-slate-50 text-slate-500 font-black text-[9px] uppercase tracking-widest rounded-xl transition"
+                        >
+                          Renomear
+                        </button>
+                        {condo.nome.toUpperCase() !== 'BELLE VILLE' && (
+                          <button
+                            onClick={() => handleDeleteCondo(condo.id, condo.nome)}
+                            className="py-2 px-3 border border-red-100 hover:border-red-200 text-red-500 hover:bg-red-50 rounded-xl transition"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
+        // DETAIL VIEW FOR SELECTED CONDO
+        <div className="space-y-6">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
+            <div>
+              <div className="flex items-center gap-2 mb-1 text-xs font-black text-slate-400 uppercase tracking-widest">
+                <button 
+                  onClick={() => setSelectedCondoId(null)}
+                  className="hover:text-blue-600 transition"
+                >
+                  Gestão de Condomínios
+                </button>
+                <span>&gt;</span>
+                <span className="text-slate-600">{selectedCondo?.nome}</span>
+              </div>
+              <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                <Building className="w-5 h-5 text-blue-600" />
+                {selectedCondo?.nome}
+              </h2>
+            </div>
+            <button
+              onClick={() => setSelectedCondoId(null)}
+              className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-black rounded-xl text-[10px] uppercase tracking-widest transition flex items-center gap-2 active:scale-95 cursor-pointer"
+            >
+              ← Voltar à Lista
+            </button>
+          </div>
+
+          {/* ATIVIDADE RECENTE Card */}
+          <div className="bg-gradient-to-r from-slate-50 to-blue-50/30 border border-slate-100 p-6 rounded-3xl shadow-sm">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div className="space-y-1">
+                <span className="text-[9px] bg-blue-100 text-blue-700 font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                  Atividade Recente
+                </span>
+                <h3 className="text-xs font-black text-slate-700 uppercase tracking-widest flex items-center gap-2 mt-1.5">
+                  <Activity className="w-4 h-4 text-blue-600 animate-pulse" />
+                  Últimos movimentos no condomínio
+                </h3>
+              </div>
+              <div className="flex gap-6">
+                <div>
+                  <span className="block text-xl font-black text-blue-600 text-center">{linkedUsers.length}</span>
+                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Usuários Vinculados</span>
+                </div>
+                <div className="border-l border-slate-200 pl-6">
+                  <span className="block text-xl font-black text-indigo-600 text-center">{auditLogs.length}</span>
+                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Log de Auditoria</span>
+                </div>
+              </div>
+            </div>
+            
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-3 bg-white rounded-2xl border border-slate-100/80 flex items-center justify-between shadow-sm">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+                    <Clock className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="block text-[8px] font-black text-slate-400 uppercase tracking-wider">Última Alteração</span>
+                    <span className="text-xs font-bold text-slate-700 block truncate max-w-[200px] md:max-w-[280px]">
+                      {auditLogs[0] ? auditLogs[0].description : 'Nenhuma alteração recente'}
+                    </span>
+                  </div>
+                </div>
+                {auditLogs[0] && (
+                  <span className="text-[9px] font-black text-slate-400 bg-slate-50 px-2 py-1 rounded">
+                    {format(new Date(auditLogs[0].timestamp), 'dd/MM HH:mm')}
+                  </span>
+                )}
+              </div>
+
+              <div className="p-3 bg-white rounded-2xl border border-slate-100/80 flex items-center justify-between shadow-sm">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+                    <CreditCard className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="block text-[8px] font-black text-slate-400 uppercase tracking-wider">Licença Atual</span>
+                    <span className="text-xs font-bold text-slate-700 block">
+                      {planInfo.planType} - <span className={cn(
+                        "font-black uppercase tracking-wider text-[10px]",
+                        planInfo.licenseStatus === 'Ativo' ? "text-emerald-600" :
+                        planInfo.licenseStatus === 'Suspenso' ? "text-rose-600" : "text-amber-600"
+                      )}>{planInfo.licenseStatus}</span>
+                    </span>
+                  </div>
+                </div>
+                <span className="text-[9px] font-black text-slate-400 bg-slate-50 px-2 py-1 rounded">
+                  Exp: {planInfo.endDate ? format(new Date(planInfo.endDate + 'T00:00:00'), 'dd/MM/yy') : 'N/D'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Mini-tab bar inside the condominium detail view */}
+          <div className="border-b border-slate-100 flex gap-1 sm:gap-4 overflow-x-auto no-scrollbar py-1">
+            {[
+              { id: 'dados' as const, label: 'Dados do Condomínio', icon: Building },
+              { id: 'usuarios' as const, label: 'Usuários', icon: Users },
+              { id: 'config' as const, label: 'Configurações', icon: Settings },
+              { id: 'plano' as const, label: 'Plano / Licença', icon: CreditCard },
+              { id: 'historico' as const, label: 'Histórico de Alterações', icon: History },
+            ].map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={cn(
+                  "px-4 py-2.5 rounded-xl flex items-center gap-2 text-xs font-black uppercase tracking-widest transition-all whitespace-nowrap cursor-pointer",
+                  activeTab === tab.id 
+                    ? "bg-blue-600 text-white shadow-md shadow-blue-100" 
+                    : "text-slate-400 hover:text-slate-600 hover:bg-slate-50"
+                )}
+              >
+                <tab.icon className="w-4 h-4" />
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* TAB CONTENTS */}
+          
+          {/* TAB 1: DADOS DO CONDOMÍNIO */}
+          {activeTab === 'dados' && (
+            <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm max-w-2xl">
+              <div className="mb-6">
+                <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                  <Building className="w-4 h-4 text-blue-500" />
+                  Informações Cadastrais
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">Atualize os dados básicos de identificação e localização do condomínio.</p>
+              </div>
+              
+              <form onSubmit={handleSaveSelectedCondo} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome do Condomínio</label>
+                  <input 
+                    type="text" 
+                    value={editingName}
+                    onChange={e => setEditingName(e.target.value)}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome do Síndico Responsável</label>
+                  <input 
+                    type="text" 
+                    value={editingManager}
+                    onChange={e => setEditingManager(e.target.value)}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    placeholder="Ex: João Silva"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Endereço Completo</label>
+                  <textarea 
+                    value={editingAddress}
+                    onChange={e => setEditingAddress(e.target.value)}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none min-h-[100px] resize-none"
+                    placeholder="Avenida Exemplo, 123..."
+                    required
+                  />
+                </div>
+                <button 
+                  type="submit"
+                  className="w-full bg-blue-600 text-white rounded-xl py-3.5 font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 active:scale-[0.98] transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  Salvar Dados do Condomínio
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* TAB 2: GERENCIAMENTO DE USUÁRIOS */}
+          {activeTab === 'usuarios' && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+                <div>
+                  <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                    <Users className="w-4 h-4 text-emerald-500" />
+                    Gerenciamento de Usuários
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">Veja, crie, suspenda ou exclua os operadores autorizados neste condomínio.</p>
+                </div>
+                <button
+                  onClick={() => setShowAddUserForm(!showAddUserForm)}
+                  className="px-4 py-2.5 bg-emerald-50 text-emerald-700 font-black rounded-xl text-[10px] uppercase tracking-widest hover:bg-emerald-100 transition flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  {showAddUserForm ? 'Cancelar Cadastro' : 'Cadastrar Novo Usuário'}
+                </button>
+              </div>
+
+              {/* Add User Inline Form */}
+              {showAddUserForm && (
+                <div className="bg-slate-50 border border-slate-200/60 p-6 rounded-3xl space-y-4 animate-in slide-in-from-top-4 duration-200 max-w-3xl">
+                  <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <UserPlus className="w-3.5 h-3.5 text-slate-400" />
+                    Cadastrar Usuário para este Condomínio
+                  </h4>
+                  <form onSubmit={handleAddLinkedUser} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5 md:col-span-2">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome Completo (Primeiro + Sobrenome)</label>
+                      <input
+                        type="text"
+                        value={newUserName}
+                        onChange={e => setNewUserName(e.target.value)}
+                        placeholder="Ex: CARLOS MENDES"
+                        className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">PIN / Código de Acesso (4 dígitos)</label>
+                      <input
+                        type="text"
+                        value={newUserPin}
+                        onChange={e => setNewUserPin(e.target.value)}
+                        placeholder="Ex: 1234"
+                        className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Cargo / Função</label>
+                      <select
+                        value={newUserRole}
+                        onChange={e => setNewUserRole(e.target.value as any)}
+                        className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      >
+                        <option value="porteiro">Porteiro</option>
+                        <option value="sindico">Síndico</option>
+                        <option value="admin">Administrador</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Telefone (opcional)</label>
+                      <input
+                        type="text"
+                        value={newUserPhone}
+                        onChange={e => setNewUserPhone(e.target.value)}
+                        placeholder="Ex: 11999998888"
+                        className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">E-mail (opcional)</label>
+                      <input
+                        type="email"
+                        value={newUserEmail}
+                        onChange={e => setNewUserEmail(e.target.value)}
+                        placeholder="Ex: email@exemplo.com"
+                        className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      />
+                    </div>
+                    <div className="md:col-span-2 pt-2">
+                      <button
+                        type="submit"
+                        className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition shadow-md cursor-pointer"
+                      >
+                        Cadastrar e Vincular Usuário
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {/* Linked Users Table */}
+              <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+                {linkedUsers.length === 0 ? (
+                  <div className="p-8 text-center">
+                    <Users className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                    <h4 className="text-xs font-black text-slate-600 uppercase tracking-wider">Nenhum usuário vinculado</h4>
+                    <p className="text-[11px] text-slate-400 mt-1">Crie um usuário para este condomínio clicando em "Novo Usuário" acima.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50/50 border-b border-slate-100">
+                          <th className="px-5 py-3.5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Nome</th>
+                          <th className="px-5 py-3.5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Cargo</th>
+                          <th className="px-5 py-3.5 text-[9px] font-black text-slate-400 uppercase tracking-widest border-l border-slate-50">PIN</th>
+                          <th className="px-5 py-3.5 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">Status</th>
+                          <th className="px-5 py-3.5 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {linkedUsers.map(user => (
+                          <tr key={user.id} className="hover:bg-slate-50/30 transition-colors">
+                            <td className="px-5 py-4">
+                              <p className="text-xs font-black text-slate-800 uppercase tracking-tight">{user.name}</p>
+                              {user.phone && <p className="text-[10px] text-slate-400 font-bold mt-0.5">{user.phone}</p>}
+                            </td>
+                            <td className="px-5 py-4">
+                              <span className={cn(
+                                "px-2 py-0.5 text-[9px] font-black uppercase tracking-wider rounded-md",
+                                user.role === 'admin' ? "bg-red-50 text-red-600 border border-red-100" :
+                                user.role === 'sindico' ? "bg-amber-50 text-amber-600 border border-amber-100" :
+                                "bg-blue-50 text-blue-600 border border-blue-100"
+                              )}>
+                                {user.role === 'admin' ? 'Admin' : user.role === 'sindico' ? 'Síndico' : 'Porteiro'}
+                              </span>
+                            </td>
+                            <td className="px-5 py-4 border-l border-slate-50">
+                              <span className="font-mono text-xs font-black bg-slate-50 px-2.5 py-1 rounded border border-slate-100 text-slate-600">{user.pin}</span>
+                            </td>
+                            <td className="px-5 py-4 text-center">
+                              <button
+                                onClick={() => handleToggleUserActive(user.id)}
+                                className={cn(
+                                  "px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider cursor-pointer transition",
+                                  user.active 
+                                    ? "bg-emerald-50 text-emerald-600 border border-emerald-100 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-100" 
+                                    : "bg-rose-50 text-rose-600 border border-rose-100 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-100"
+                                )}
+                              >
+                                {user.active ? 'Ativo' : 'Suspenso'}
+                              </button>
+                            </td>
+                            <td className="px-5 py-4 text-right">
+                              <button
+                                onClick={() => handleDeleteUser(user.id, user.name)}
+                                className="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: CONFIGURAÇÕES */}
+          {activeTab === 'config' && (
+            <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm max-w-2xl">
+              <div className="mb-6">
+                <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                  <Settings className="w-4 h-4 text-slate-700" />
+                  Configurações de Funcionamento
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">Customize o comportamento padrão das regras da portaria para este condomínio.</p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between py-3.5 border-b border-slate-50">
+                    <div>
+                      <p className="text-xs font-black text-slate-700 uppercase tracking-wide">Liberação Direta (Frequentes)</p>
+                      <p className="text-[10px] text-slate-400 font-medium">Permitir liberação de visitantes frequentes sem confirmação</p>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={condoSettings.allowFrequentDirectRelease}
+                      onChange={e => setCondoSettings({...condoSettings, allowFrequentDirectRelease: e.target.checked})}
+                      className="w-4 h-4 text-blue-600 focus:ring-blue-500 rounded cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between py-3.5 border-b border-slate-50">
+                    <div>
+                      <p className="text-xs font-black text-slate-700 uppercase tracking-wide">Liberação Direta (Entregadores)</p>
+                      <p className="text-[10px] text-slate-400 font-medium">Sugerir liberação automática para entregas pré-configuradas</p>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={condoSettings.allowAutoDeliveryRelease}
+                      onChange={e => setCondoSettings({...condoSettings, allowAutoDeliveryRelease: e.target.checked})}
+                      className="w-4 h-4 text-blue-600 focus:ring-blue-500 rounded cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between py-3.5 border-b border-slate-50">
+                    <div>
+                      <p className="text-xs font-black text-slate-700 uppercase tracking-wide">Exigir Documento (RG/CPF)</p>
+                      <p className="text-[10px] text-slate-400 font-medium">Tornar preenchimento do documento obrigatório para visitantes</p>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={condoSettings.requireDocument}
+                      onChange={e => setCondoSettings({...condoSettings, requireDocument: e.target.checked})}
+                      className="w-4 h-4 text-blue-600 focus:ring-blue-500 rounded cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between py-3.5">
+                    <div>
+                      <p className="text-xs font-black text-slate-700 uppercase tracking-wide">Confirmar com Morador</p>
+                      <p className="text-[10px] text-slate-400 font-medium">Obrigar contato prévio com a unidade antes de qualquer liberação</p>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={condoSettings.confirmWithResident}
+                      onChange={e => setCondoSettings({...condoSettings, confirmWithResident: e.target.checked})}
+                      className="w-4 h-4 text-blue-600 focus:ring-blue-500 rounded cursor-pointer"
+                    />
+                  </div>
+                </div>
+                
+                <button 
+                  onClick={handleSaveCondoSettings}
+                  className="w-full mt-6 bg-slate-900 text-white rounded-xl py-3.5 font-black text-[10px] uppercase tracking-widest hover:bg-slate-800 active:scale-[0.98] transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  Salvar Configurações Operacionais
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: PLANO / LICENÇA */}
+          {activeTab === 'plano' && (
+            <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm max-w-2xl">
+              <div className="mb-6">
+                <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                  <CreditCard className="w-4 h-4 text-blue-500" />
+                  Plano & Licença Contratada
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">Visualize e edite as informações de faturamento, vigência e nível de plano.</p>
+              </div>
+
+              <form onSubmit={handleSavePlanDetails} className="space-y-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Tipo de Plano</label>
+                    <select
+                      value={planInfo.planType}
+                      onChange={e => setPlanInfo({...planInfo, planType: e.target.value})}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    >
+                      <option value="Premium">👑 Premium (Completo)</option>
+                      <option value="Básico">💼 Básico (Operacional)</option>
+                      <option value="Custom">⚙️ Customizado (Sob Demanda)</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Status da Licença</label>
+                    <select
+                      value={planInfo.licenseStatus}
+                      onChange={e => setPlanInfo({...planInfo, licenseStatus: e.target.value})}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    >
+                      <option value="Ativo">🟢 Ativo (Acesso Liberado)</option>
+                      <option value="Suspenso">🔴 Suspenso (Acesso Bloqueado)</option>
+                      <option value="Aguardando Pagamento">🟡 Aguardando Pagamento</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Data de Início da Vigência</label>
+                    <input
+                      type="date"
+                      value={planInfo.startDate}
+                      onChange={e => setPlanInfo({...planInfo, startDate: e.target.value})}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Data de Expiração / Renovação</label>
+                    <input
+                      type="date"
+                      value={planInfo.endDate}
+                      onChange={e => setPlanInfo({...planInfo, endDate: e.target.value})}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 p-4 rounded-2xl flex items-start gap-3 border border-slate-100">
+                  <span className="text-blue-600 text-lg">💡</span>
+                  <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
+                    A alteração do status para <strong className="text-rose-600">Suspenso</strong> impossibilita a sincronização de dados e impede os porteiros do condomínio selecionado de efetuarem novos logins, mantendo o controle administrativo seguro.
+                  </p>
+                </div>
+
+                <button 
+                  type="submit"
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-3.5 font-black text-[10px] uppercase tracking-widest active:scale-[0.98] transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  Salvar Informações do Plano
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* TAB 5: HISTÓRICO DE ALTERAÇÕES */}
+          {activeTab === 'historico' && (
+            <div className="space-y-4 max-w-4xl">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                    <History className="w-4 h-4 text-indigo-500" />
+                    Histórico de Auditoria
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">Logs automáticos de todas as modificações realizadas pelos administradores neste condomínio.</p>
+                </div>
+                {auditLogs.length > 0 && (
+                  <button
+                    onClick={() => {
+                      if (confirm('Deseja limpar todo o histórico de alterações deste condomínio? Esta ação não pode ser desfeita.')) {
+                        localStorage.removeItem(`portaria_condo_audit_${selectedCondoId}`);
+                        setAuditLogs([]);
+                        toast.success('Histórico de alterações limpo!');
+                      }
+                    }}
+                    className="px-3 py-2 border border-slate-200 hover:bg-slate-50 text-slate-400 hover:text-rose-600 rounded-xl text-[9px] uppercase tracking-wider transition font-black flex items-center gap-1 cursor-pointer"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Limpar Logs
+                  </button>
+                )}
+              </div>
+
+              <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+                {auditLogs.length === 0 ? (
+                  <div className="p-12 text-center">
+                    <History className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                    <h4 className="text-xs font-black text-slate-600 uppercase tracking-wider">Nenhuma alteração registrada</h4>
+                    <p className="text-[11px] text-slate-400 mt-1">Qualquer alteração feita nos dados, configurações, usuários ou plano será mostrada aqui.</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-50">
+                    {auditLogs.map((log) => (
+                      <div key={log.id} className="p-4 sm:px-6 hover:bg-slate-50/20 transition-colors flex flex-col sm:flex-row justify-between sm:items-center gap-2">
+                        <div className="space-y-1">
+                          <p className="text-xs font-bold text-slate-700">{log.description}</p>
+                          <div className="flex items-center gap-1.5 text-[9px] text-slate-400 font-bold uppercase tracking-wider">
+                            <span className="text-slate-600 font-black">{log.user}</span>
+                            <span>•</span>
+                            <span>{format(new Date(log.timestamp), 'dd/MM/yyyy HH:mm:ss')}</span>
+                          </div>
+                        </div>
+                        <span className="self-start sm:self-auto px-2 py-0.5 rounded text-[8px] bg-slate-100 text-slate-500 font-black uppercase tracking-widest">
+                          Auditado
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Cadastro de Novo Condomínio Dialog Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-100 rounded-[2rem] shadow-2xl p-6 w-full max-w-md animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-center mb-6 border-b border-slate-50 pb-4">
+              <h3 className="text-base font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                <Building className="w-5 h-5 text-blue-600" />
+                Cadastrar Condomínio
+              </h3>
+              <button
+                onClick={() => setShowAddModal(false)}
+                className="p-1.5 hover:bg-slate-50 rounded-lg text-slate-400 hover:text-slate-600 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddCondo} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome do Condomínio</label>
+                <input
+                  type="text"
+                  placeholder="Ex: RESIDENCIAL JARDINS"
+                  value={newCondoName}
+                  onChange={e => setNewCondoName(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Síndico Responsável</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Carlos Mendes"
+                  value={newCondoManager}
+                  onChange={e => setNewCondoManager(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Endereço Completo</label>
+                <textarea
+                  placeholder="Rua, Número, Bairro, Cidade..."
+                  value={newCondoAddress}
+                  onChange={e => setNewCondoAddress(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none min-h-[80px] resize-none"
+                />
+              </div>
+
+              <div className="flex gap-4 border-t border-slate-50 pt-5 mt-5">
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="flex-1 py-3 border border-slate-200 hover:border-slate-300 text-slate-500 font-black rounded-xl text-[10px] uppercase tracking-wider transition cursor-pointer text-center"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-xl text-[10px] uppercase tracking-wider transition cursor-pointer shadow-lg shadow-blue-100"
+                >
+                  Salvar Cadastro
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
